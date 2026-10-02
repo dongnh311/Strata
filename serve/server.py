@@ -736,6 +736,96 @@ class Detokenizer:
         return delta
 
 
+# ------------------------------------------------------------------------------------------------ stray CJK text
+# A heavily quantized model now and then writes a Chinese word in the middle of a sentence in another language. The engine has
+# no logit-bias or token-ban, so it cannot be prevented while sampling; with the config's `"strip_cjk": true` the characters
+# are removed from the ANSWER text on its way out (never from the thinking or from a tool call's arguments), unless the request
+# itself contains such text from the user or the system prompt.  Off by default.
+_CJK = re.compile("[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]+")
+
+
+def _text_pieces(content):
+    if isinstance(content, str):
+        yield content
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                yield part
+            elif isinstance(part, dict) and part.get("type") in (None, "text", "input_text") \
+                    and isinstance(part.get("text"), str):
+                yield part["text"]
+
+
+def request_has_cjk(req) -> bool:
+    """Did the user or the system prompt of this request write CJK text?  What the model wrote earlier and what tools
+    returned does not count: one leaked word in a past answer must not switch the filter off."""
+    if not isinstance(req, dict):
+        return False
+    if any(_CJK.search(t) for t in _text_pieces(req.get("system"))):
+        return True
+    messages = req.get("messages")
+    if isinstance(messages, list):
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") in ("user", "system", "developer"):
+                if any(_CJK.search(t) for t in _text_pieces(m.get("content"))):
+                    return True
+    return False
+
+
+def _console_safe(text: str) -> str:
+    """`text` as the server's console can print it: what its encoding cannot show (a redirected Windows console is cp1252
+    unless PYTHONIOENCODING says otherwise) becomes \\uXXXX.  A log line must never fail a request."""
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    return text.encode(enc, "backslashreplace").decode(enc)
+
+
+class CjkStripper:
+    """Removes CJK runs from a stream of text pieces (a character may arrive alone) and keeps the spacing: a space that
+    would double up where a removed word sat between two spaces is dropped.  `removed` counts the characters removed."""
+
+    def __init__(self):
+        self.removed = 0
+        self.last = ""             # the last character let through
+        self.gap = False           # a removal happened since then
+        self.tail = ""             # the last 40 characters let through
+        self.samples = []          # up to 5 cuts as (the text before it, what was cut): the log shows what the filter did
+        self.cur = None            # which sample the current cut belongs to
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return text
+        out, i = [], 0
+        for m in _CJK.finditer(text):
+            self._keep(out, text[i:m.start()])
+            self._cut(m.group())
+            i = m.end()
+        self._keep(out, text[i:])
+        return "".join(out)
+
+    def _cut(self, run: str) -> None:
+        self.removed += len(run)
+        if self.gap:                                   # the same cut, split over pieces
+            if self.cur is not None:
+                before, cut = self.samples[self.cur]
+                self.samples[self.cur] = (before, cut + run)
+        else:
+            self.cur = None
+            if len(self.samples) < 5:
+                self.samples.append((self.tail, run))
+                self.cur = len(self.samples) - 1
+        self.gap = True
+
+    def _keep(self, out: list, s: str) -> None:
+        if not s:
+            return
+        if self.gap and self.last in ("", " ", "\t"):
+            s = s.lstrip(" \t")                 # not newlines: a paragraph break stays
+        if s:
+            out.append(s)
+            self.last, self.gap = s[-1], False
+            self.tail = (self.tail + s)[-40:]
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -777,6 +867,8 @@ class Service:
         self.idle_unload_s = 0
         self.min_free_vram_mib = 0
         self.before_load = None
+        self.strip_cjk = False                           # the config's "strip_cjk": see CjkStripper
+        self.cjk_stats = {"requests_touched": 0, "chars_removed": 0}
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
@@ -1105,6 +1197,7 @@ class Service:
             "concurrency": {"serving": 1, "requested": 1},       # one request at a time; more wait their turn
             "dialects": ["/v1/chat/completions", "/v1/messages"],
             "vision": {"enabled": images, "available": images, "error": None},
+            "strip_cjk": {"enabled": bool(self.strip_cjk), **self.cjk_stats},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
@@ -1208,7 +1301,37 @@ class Service:
         return now
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, aliases=None) -> Iterator[tuple[str, object]]:
-        """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
+        """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).  `sampling` is
+        the request's own fields (the whole request body)."""
+        events = self._run(ids, thinking, tools, max_new, sampling, cancel, aliases)
+        if not self.strip_cjk or request_has_cjk(sampling):
+            return events
+        return self._without_cjk(events)
+
+    def _without_cjk(self, events):
+        f = CjkStripper()
+        try:
+            for kind, x in events:
+                if kind == "event" and x.kind == "content" and x.text:
+                    text = f.feed(x.text)
+                    if not text:
+                        continue
+                    if text != x.text:
+                        x = Event(x.kind, text, x.call)
+                yield kind, x
+        finally:
+            events.close()
+            if f.removed:
+                with self.status_lock:
+                    self.cjk_stats["requests_touched"] += 1
+                    self.cjk_stats["chars_removed"] += f.removed
+                try:
+                    cuts = "; ".join(f"after '{_console_safe(before)}' cut [{_console_safe(cut)}]" for before, cut in f.samples)
+                    print(f"[strata] removed {f.removed} stray CJK character(s) from the answer: {cuts}", flush=True)
+                except Exception:                      # logging only: never let it fail the answer
+                    pass
+
+    def _run(self, ids, thinking, tools, max_new, sampling, cancel, aliases=None) -> Iterator[tuple[str, object]]:
         budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
@@ -2540,6 +2663,7 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    svc.strip_cjk = bool(cfg.get("strip_cjk"))
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")

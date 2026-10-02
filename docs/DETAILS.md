@@ -549,6 +549,13 @@ the speculative decoding checks at once, exactly as if it decoded one token at a
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
 
+**Stray Chinese words (optional).** A heavily quantized model now and then writes a Chinese word in the middle of a sentence
+in another language, and the engine has no logit bias or token ban to stop that while sampling. With `"strip_cjk": true` in
+the run config the server removes CJK characters (and CJK or fullwidth punctuation) from the **answer** text on its way out,
+never from the thinking or from a tool call's arguments, unless the user or the system prompt of that request contains such
+text. A removed word leaves a gap in the sentence (the spacing is tidied); the server window prints what was cut and the
+characters before it, and `/v1/status` counts the cuts under `strip_cjk`. Off by default.
+
 ---
 
 ## Tools from MCP servers
