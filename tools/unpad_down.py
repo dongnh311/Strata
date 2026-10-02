@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import sys
@@ -118,7 +119,16 @@ def _field(reader, key):
     return None if f is None else f.contents()
 
 
-def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progress=None) -> dict:
+def _sync(writer) -> None:
+    for f in writer.fout:
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progress=None,
+            sync_bytes: int = 256 << 20) -> dict:
+    """`sync_bytes`: flush the output to disk after this many bytes.  The first real run (53 GiB, 600 MiB layers) wrote
+    faster than the disk took it, the dirty pages piled up and this PC's free memory fell to 379 MB."""
     src, dst = pathlib.Path(src), pathlib.Path(dst)
     if dst.exists():
         raise FileExistsError(f"{dst} exists; refusing to overwrite it")
@@ -182,7 +192,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     writer.write_kv_data_to_file()
     writer.write_ti_data_to_file()
 
-    worst, tail_max, done = 0.0, 0.0, 0
+    worst, tail_max, done, pending = 0.0, 0.0, 0, 0
     rng = np.random.default_rng(0)
     t0 = time.time()
     for t, action in plan:
@@ -190,6 +200,10 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
             continue
         if action == "copy":
             writer.write_tensor_data(t.data, tensor_endianess=reader.endianess)
+            pending += t.data.nbytes
+            if pending >= sync_bytes:
+                _sync(writer)
+                pending = 0
             continue
         experts, rows, _ = t.data.shape
         out = np.empty((experts, rows, keep_values // Q51_VALUES * Q51_BYTES), np.uint8)
@@ -203,9 +217,14 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                 writer.close()
                 raise RuntimeError(f"{t.name} expert {e}: block error {err:.3e} > {TOL:.3e}; {dst} is incomplete")
         writer.write_tensor_data(out, tensor_endianess=reader.endianess)
+        pending += out.nbytes
+        if pending >= sync_bytes:
+            _sync(writer)
+            pending = 0
         done += 1
         if progress:
             progress(done, down, t.name, time.time() - t0, worst)
+    _sync(writer)
     writer.close()
     return {"source": src.name, "output": dst.name, "blocks_in": blocks_in, "blocks_out": blocks_out,
             "down_tensors_converted": down, "dropped_tensors": dropped_names, "keep_values": keep_values,
@@ -219,12 +238,13 @@ def main(argv=None) -> int:
     ap.add_argument("dst", type=pathlib.Path)
     ap.add_argument("--keep", type=int, default=LOGICAL_IN, help="values kept per down row (default 640)")
     ap.add_argument("--samples", type=int, default=4, help="experts per down tensor compared against the source (default 4)")
+    ap.add_argument("--sync-mib", type=int, default=256, help="flush the output to disk every N MiB (default 256)")
     a = ap.parse_args(argv)
 
     def progress(done, total, name, secs, worst):
         print(f"  [{done:2d}/{total}] {name}  {secs:6.0f}s  worst block error so far {worst:.2e}", flush=True)
 
-    m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress)
+    m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress, sync_bytes=a.sync_mib << 20)
     a.dst.with_suffix(a.dst.suffix + ".json").write_text(json.dumps(m, indent=1), encoding="utf-8")
     print(f"done: {m['down_tensors_converted']} down tensors repacked, {len(m['dropped_tensors'])} MTP tensors dropped, "
           f"blocks {m['blocks_in']} -> {m['blocks_out']}, worst sampled block error {m['max_block_error']:.2e} "

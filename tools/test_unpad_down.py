@@ -198,6 +198,23 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaises(ValueError):
             U.convert(other, self.dir / "y.gguf")
 
+    def test_output_is_flushed_to_disk_as_it_goes(self):
+        # the first real run wrote 600 MiB layers faster than the disk took them and the dirty pages pushed this PC's
+        # free memory to 379 MB, so the writer must fsync every `sync_bytes` bytes, not only at the end
+        import os
+        from unittest import mock
+        with mock.patch("os.fsync", wraps=os.fsync) as fs:
+            self.run_convert(sync_bytes=1)
+        kept = sum(1 for n in self.tensors if not n.startswith("blk.2."))
+        self.assertGreaterEqual(fs.call_count, kept)
+
+    def test_the_default_still_syncs_once_at_the_end(self):
+        import os
+        from unittest import mock
+        with mock.patch("os.fsync", wraps=os.fsync) as fs:
+            self.run_convert()
+        self.assertGreaterEqual(fs.call_count, 1)
+
     def test_the_output_is_not_overwritten(self):
         self.dst.write_bytes(b"x")
         with self.assertRaises(FileExistsError):
