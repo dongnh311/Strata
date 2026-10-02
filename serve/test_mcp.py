@@ -346,6 +346,58 @@ class ToolLoop(unittest.TestCase):
         self.assertIn('"name": "fake__echo"', self.engine.prompt_text(0))
         self.assertEqual(len(self.engine.prompts), 1)
 
+    # --- the model sees `fake__echo` but often writes the tool's own name, `echo`
+    def test_an_unprefixed_name_runs_the_one_tool_it_names(self):
+        """A name that matches exactly one offered MCP tool runs it; the events, the call and the history carry the
+        full name, and the tool's schema still types the arguments (the string "42" stays a string)."""
+        self.start(call_script("echo", text="42"), "</think>\n\nThe tool said 42.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        mcp = [c["strata_mcp"] for c in cs if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"])
+        self.assertEqual((mcp[0]["name"], mcp[1]["name"]), ("fake__echo", "fake__echo"))
+        self.assertEqual(mcp[1]["arguments"], {"text": "42"})
+        self.assertEqual((mcp[2]["ok"], mcp[2]["text"]), (True, "42"))
+        self.assertFalse([c for c in cs if c["choices"][0]["delta"].get("tool_calls")])   # nothing for the client to run
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertIn("<function=fake__echo>\n<parameter=text>\n42\n</parameter>", self.engine.prompt_text(1))
+
+    def test_an_ambiguous_unprefixed_name_goes_to_the_client(self):
+        """Two servers offer `echo`: the bare name names neither of them, so it is not guessed."""
+        self.hub.close()
+        self.hub = McpHub({"fake": stdio(), "other": stdio()}, {"timeout_s": 10, "max_result_chars": 500, "max_rounds": 2})
+        self.hub.start(wait=True)
+        self.start(call_script("echo", text="x"), "</think>\n\nnever")
+        code, text = self.post({"strata_mcp": True})
+        cs = self.chunks(text)
+        calls = [tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "echo")
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
+
+    def test_an_unprefixed_name_the_client_owns_stays_the_clients(self):
+        own = [{"type": "function", "function": {"name": "echo", "parameters": {"type": "object", "properties": {
+            "text": {"type": "string"}}}}}]
+        self.start(call_script("echo", text="x"), "</think>\n\nnever")
+        code, text = self.post({"strata_mcp": True, "tools": own})
+        cs = self.chunks(text)
+        calls = [tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "echo")
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertNotIn('"call"', Path(self.log.name).read_text())
+
+    def test_a_name_that_matches_no_offered_tool_goes_to_the_client(self):
+        self.start(call_script("nosuch", text="x"), "</think>\n\nnever")
+        code, text = self.post({"strata_mcp": True})
+        cs = self.chunks(text)
+        calls = [tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "nosuch")
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "tool_calls")
+        self.assertNotIn('"call"', Path(self.log.name).read_text())
+
     def test_tool_error_is_a_result(self):
         self.start(call_script("fake__fail"), "</think>\n\nIt failed.")
         code, text = self.post({"strata_mcp": True})
@@ -441,6 +493,57 @@ class NoServers(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class BareToolNames(unittest.TestCase):
+    """The model is shown `<server>__<tool>` but often writes `<tool>`: which bare names count (mcp_aliases) and that
+    the parser applies them to the whole call."""
+    ROUTES = {"fake__echo": (None, "echo"), "fake__add": (None, "add"), "other__echo": (None, "echo"),
+              "other__ping": (None, "ping")}
+
+    def test_only_a_name_that_is_exactly_one_offered_tool(self):
+        from serve.server import mcp_aliases
+        offered = set(self.ROUTES)
+        self.assertEqual(mcp_aliases(self.ROUTES, offered, set()), {"add": "fake__add", "ping": "other__ping"})
+
+    def test_the_clients_own_tools_win(self):
+        from serve.server import mcp_aliases
+        self.assertEqual(mcp_aliases(self.ROUTES, set(self.ROUTES), {"add"}), {"ping": "other__ping"})
+
+    def test_a_tool_that_is_not_offered_is_not_an_alias(self):
+        from serve.server import mcp_aliases
+        offered = {"fake__echo", "fake__add"}                           # `other` is not offered: `echo` is unique now
+        self.assertEqual(mcp_aliases(self.ROUTES, offered, set()), {"echo": "fake__echo", "add": "fake__add"})
+
+    def test_a_bare_name_is_never_a_full_name(self):
+        from serve.server import mcp_aliases
+        # "c" is an offered tool's full name: the other tool's own name, also "c", must not take it over
+        routes = {"a__b": (None, "c"), "c": (None, "zzz")}
+        self.assertEqual(mcp_aliases(routes, set(routes), set()), {"zzz": "c"})
+
+    def test_the_parser_resolves_it_in_both_events(self):
+        from serve.frontend import OutputParser
+        schema = [{"name": "fake__echo", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}}]
+        text = "</think>\n\n<tool_call>\n<function=echo>\n<parameter=text>\n42\n</parameter>\n</function>\n</tool_call>"
+        for step in (1, 7, 10_000):
+            with self.subTest(step=step):
+                p = OutputParser(thinking=True, tools=schema, stream_tools=True, aliases={"echo": "fake__echo"})
+                evs = []
+                for i in range(0, len(text), step):
+                    evs += p.feed(text[i:i + step])
+                evs += p.finish()
+                self.assertEqual([e.call.name for e in evs if e.kind == "tool_start"], ["fake__echo"])
+                calls = [e.call for e in evs if e.kind == "tool_call"]
+                self.assertEqual([(c.name, c.arguments) for c in calls], [("fake__echo", {"text": "42"})])
+                streamed = "".join(e.text for e in evs if e.kind == "tool_args")
+                self.assertEqual(json.loads(streamed), {"text": "42"})
+
+    def test_without_aliases_the_parser_is_unchanged(self):
+        from serve.frontend import OutputParser
+        text = "</think>\n\n<tool_call>\n<function=echo>\n<parameter=text>\nhi\n</parameter>\n</function>\n</tool_call>"
+        p = OutputParser(thinking=True, tools=None, stream_tools=True)
+        evs = p.feed(text) + p.finish()
+        self.assertEqual([e.call.name for e in evs if e.kind == "tool_call"], ["echo"])
 
 
 if __name__ == "__main__":
