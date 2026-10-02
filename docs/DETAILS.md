@@ -589,6 +589,9 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
   (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
+  When the last allowed round has run, its last tool result ends with a note that the limit is reached and the model must
+  answer now (the tools block at the start of the prompt is left alone, so the conversation cache survives); before
+  that note a pass that ended in one more call left the chat with no answer.
 - The model is shown each tool as `<server>__<tool>` (`files__read_file`) and sometimes writes only `<tool>`
   (`read_file`). A bare name that matches exactly one tool offered to that request runs it. A name that matches two
   (the same tool on two servers), a tool the request brought itself, or nothing is not guessed: the call ends the turn
