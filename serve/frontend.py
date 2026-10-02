@@ -368,11 +368,16 @@ class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
-    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False):
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 aliases: dict[str, str] | None = None):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # aliases: a name the model writes -> the name of the tool it means (the web chat's MCP tools are offered as
+        # `<server>__<tool>`, and the model often writes `<tool>`).  Applied to the streamed start and to the final
+        # call alike, so the schema, the events and the history all see the real name.
+        self.aliases = dict(aliases or {})
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -403,6 +408,7 @@ class OutputParser:
                 if b < 0:
                     return out
                 name = rest[a + 10:b]
+                name = self.aliases.get(name, name)
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
@@ -553,7 +559,9 @@ class OutputParser:
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
                 name = body.strip()[len("<function="):].split(">", 1)[0]
+                name = self.aliases.get(name, name)
                 call = parse_tool_call(body, self.schemas.get(name))
+                call.name = name
                 if self.scall is not None:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))
