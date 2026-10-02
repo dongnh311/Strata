@@ -94,6 +94,88 @@ def q4k_to_q5_1(raw, keep_values: int = LOGICAL_IN) -> np.ndarray:
     return out.reshape(*lead, n_sub * Q51_BYTES)
 
 
+# --- smaller down types.  q5_1 above is a repack (no loss beyond fp16).  The two below re-quantize the dequantized values:
+# q4_0 (4.5 bits per weight) and q2_0 (2.25: Strata's own 64-value blocks, grid {-1,0,1,2} x d, fp16 d, as tools/mtp_pack.py
+# writes them for the MTP head and as the base model's experts are stored).  They exist because the expert arena of the
+# q5_1 file (47.5 GiB) does not fit this PC's RAM beside a 512K context.
+CODECS = {"q5_1": (Q.Q5_1, Q51_VALUES, Q51_BYTES), "q4_0": (Q.Q4_0, 32, 18), "q2_0": (Q.Q2_0, 64, 18)}
+
+
+def encode_q2_0(w: np.ndarray) -> np.ndarray:
+    """[..., n] float32 (n a multiple of 64) -> flat uint8 Q2_0 blocks: fp16 d, 16 bytes of 2-bit codes (code = q + 1, 4 per
+    byte, q in -1..2).  d is the scale among 17 candidates (amax/2 .. amax) that minimizes the squared error, as in
+    tools/mtp_pack.py q2_0; the codes are computed against the STORED fp16 scale."""
+    x = np.asarray(w, dtype=np.float32).reshape(-1, 64)
+    amax = np.abs(x).max(axis=1, keepdims=True)
+    best_err = np.full((x.shape[0], 1), np.inf, dtype=np.float32)
+    best_d = np.zeros_like(amax)
+    for f in np.linspace(0.5, 1.0, 17, dtype=np.float32):
+        d = amax * f
+        inv = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
+        q = np.clip(np.rint(x * inv), -1, 2)
+        err = ((q * d - x) ** 2).sum(axis=1, keepdims=True)
+        better = err < best_err
+        best_err = np.where(better, err, best_err)
+        best_d = np.where(better, d, best_d)
+    d16 = best_d.astype(np.float16)
+    d = d16.astype(np.float32)
+    inv = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
+    codes = (np.clip(np.rint(x * inv), -1, 2) + 1).astype(np.uint8).reshape(-1, 16, 4)
+    out = np.empty((x.shape[0], 18), dtype=np.uint8)
+    out[:, :2] = d16.view(np.uint8).reshape(-1, 2)
+    out[:, 2:] = codes[:, :, 0] | (codes[:, :, 1] << 2) | (codes[:, :, 2] << 4) | (codes[:, :, 3] << 6)
+    return out.reshape(-1)
+
+
+def decode_q2_0(blocks: np.ndarray) -> np.ndarray:
+    """[..., nb*18] uint8 -> [..., nb*64] float32 (the inverse of encode_q2_0; used for the sampled error check)."""
+    b = np.ascontiguousarray(blocks).reshape(-1, 18)
+    d = np.ascontiguousarray(b[:, :2]).view(np.float16).reshape(-1, 1).astype(np.float32)
+    c = b[:, 2:]
+    codes = np.stack([(c >> s) & 3 for s in (0, 2, 4, 6)], axis=-1).reshape(-1, 64).astype(np.float32)
+    return ((codes - 1.0) * d).reshape(*blocks.shape[:-1], -1)
+
+
+def q4k_to_codec(raw, keep_values: int = LOGICAL_IN, codec: str = "q5_1") -> np.ndarray:
+    """Q4_K rows -> rows of the first `keep_values` values in `codec` ("q5_1" repack, "q4_0" / "q2_0" re-quantized)."""
+    if codec not in CODECS:
+        raise ValueError(f"unknown down codec {codec!r} (choose from {sorted(CODECS)})")
+    if codec == "q5_1":
+        return q4k_to_q5_1(raw, keep_values)
+    _, per_block, block_bytes = CODECS[codec]
+    if keep_values <= 0 or keep_values % per_block:
+        raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {codec} blocks")
+    vals = quants.dequantize(np.ascontiguousarray(raw), Q.Q4_K)[..., :keep_values].astype(np.float32)
+    if codec == "q4_0":
+        return np.asarray(quants.quantize(vals, Q.Q4_0))
+    return encode_q2_0(vals).reshape(*vals.shape[:-1], keep_values // per_block * block_bytes)
+
+
+def _encode_job(job):
+    raw, keep_values, codec = job
+    return q4k_to_codec(raw, keep_values, codec)
+
+
+def make_pool(workers: int):
+    from concurrent.futures import ProcessPoolExecutor
+    return ProcessPoolExecutor(max_workers=workers)
+
+
+def encode_experts(pool, raw: np.ndarray, keep_values: int, codec: str) -> np.ndarray:
+    """(experts, rows, bytes) -> (experts, rows, bytes') with one expert per job on the worker processes."""
+    jobs = [(np.ascontiguousarray(raw[e]), keep_values, codec) for e in range(raw.shape[0])]
+    return np.stack(list(pool.map(_encode_job, jobs, chunksize=4)))
+
+
+def lossy_check(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int, codec: str) -> tuple[float, float]:
+    """(relative RMS error of the kept columns, largest |value| in the dropped columns) for one expert's rows."""
+    a = quants.dequantize(src_rows, Q.Q4_K)
+    b = quants.dequantize(out_rows, Q.Q4_0) if codec == "q4_0" else decode_q2_0(out_rows)
+    ref = a[..., :keep_values]
+    rms = float(np.sqrt(((ref - b) ** 2).mean() / max((ref ** 2).mean(), 1e-30)))
+    return rms, (float(np.abs(a[..., keep_values:]).max()) if a.shape[-1] > keep_values else 0.0)
+
+
 def _block_error(src_vals: np.ndarray, out_vals: np.ndarray) -> float:
     """max over 32-value blocks of |delta| / max|source block| (a block of zeros must stay zeros)."""
     s = src_vals.reshape(-1, 32)
@@ -126,10 +208,21 @@ def _sync(writer) -> None:
 
 
 def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progress=None,
-            sync_bytes: int = 256 << 20) -> dict:
+            sync_bytes: int = 256 << 20, split=None, down: str = "q5_1", workers: int = 1) -> dict:
     """`sync_bytes`: flush the output to disk after this many bytes.  The first real run (53 GiB, 600 MiB layers) wrote
-    faster than the disk took it, the dirty pages piled up and this PC's free memory fell to 379 MB."""
+    faster than the disk took it, the dirty pages piled up and this PC's free memory fell to 379 MB.
+    `split` = (count, tensors): write split.no 0 / split.count / split.tensors.count so that the file is "shard 1 of
+    `count`" next to the PLE table's own GGUF, which Strata's native loader requires (native_dense.cpp:88-99); `tensors`
+    is the total over both files (this file's tensors + the PLE table's 1).
+    `down`: the type of the rewritten down experts - "q5_1" (repack, no loss), "q4_0" or "q2_0" (re-quantized; `workers`
+    processes share the work, one expert per job)."""
     src, dst = pathlib.Path(src), pathlib.Path(dst)
+    if down not in CODECS:
+        raise ValueError(f"unknown down codec {down!r} (choose from {sorted(CODECS)})")
+    down_qt, per_block, block_bytes = CODECS[down]
+    if keep_values <= 0 or keep_values % per_block:
+        raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {down} blocks")
+    row_out = keep_values // per_block * block_bytes
     if dst.exists():
         raise FileExistsError(f"{dst} exists; refusing to overwrite it")
     reader = gguf.GGUFReader(str(src), "r")
@@ -142,7 +235,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     blocks_out = blocks_in - nextn
 
     plan = []                      # (tensor, action)  action: "copy" | "down" | "drop"
-    down = dropped = 0
+    n_down = 0
     dropped_names = []
     for t in reader.tensors:
         m = _BLOCK.match(t.name)
@@ -155,10 +248,10 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
             if t.tensor_type != Q.Q4_K or dims[0] != PADDED_IN:
                 raise ValueError(f"{t.name} is {t.tensor_type.name} {dims}, expected the padded Q4_K [{PADDED_IN}, rows, experts]")
             plan.append((t, "down"))
-            down += 1
+            n_down += 1
         else:
             plan.append((t, "copy"))
-    if down == 0:
+    if n_down == 0:
         raise ValueError("no routed down tensors found")
 
     writer = gguf.GGUFWriter(str(dst), "qwen4exp")
@@ -177,14 +270,18 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
         else:
             writer.add_key_value(name, field.contents(), vtype, sub_type=sub)
 
+    if split:
+        writer.add_uint16("split.no", 0)
+        writer.add_uint16("split.count", int(split[0]))
+        writer.add_int32("split.tensors.count", int(split[1]))
+
     for t, action in plan:
         if action == "drop":
             continue
         if action == "down":
             shp = list(t.data.shape)                      # (experts, rows, 3 blocks of 144 bytes)
-            row_out = keep_values // Q51_VALUES * Q51_BYTES
             nbytes = shp[0] * shp[1] * row_out
-            writer.add_tensor_info(t.name, (shp[0], shp[1], row_out), np.dtype(np.uint8), nbytes, Q.Q5_1)
+            writer.add_tensor_info(t.name, (shp[0], shp[1], row_out), np.dtype(np.uint8), nbytes, down_qt)
         else:
             writer.add_tensor_info(t.name, t.data.shape, t.data.dtype, t.data.nbytes, t.tensor_type)
 
@@ -192,44 +289,56 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     writer.write_kv_data_to_file()
     writer.write_ti_data_to_file()
 
-    worst, tail_max, done, pending = 0.0, 0.0, 0, 0
+    worst, worst_rms, tail_max, done, pending = 0.0, 0.0, 0.0, 0, 0
     rng = np.random.default_rng(0)
     t0 = time.time()
-    for t, action in plan:
-        if action == "drop":
-            continue
-        if action == "copy":
-            writer.write_tensor_data(t.data, tensor_endianess=reader.endianess)
-            pending += t.data.nbytes
+    pool = make_pool(workers) if workers > 1 and down != "q5_1" else None
+    try:
+        for t, action in plan:
+            if action == "drop":
+                continue
+            if action == "copy":
+                writer.write_tensor_data(t.data, tensor_endianess=reader.endianess)
+                pending += t.data.nbytes
+                if pending >= sync_bytes:
+                    _sync(writer)
+                    pending = 0
+                continue
+            experts, rows, _ = t.data.shape
+            if pool is not None:
+                out = encode_experts(pool, t.data, keep_values, down)
+            else:
+                out = np.empty((experts, rows, row_out), np.uint8)
+                for e0 in range(0, experts, CHUNK_EXPERTS):
+                    out[e0:e0 + CHUNK_EXPERTS] = q4k_to_codec(t.data[e0:e0 + CHUNK_EXPERTS], keep_values, down)
+            pick = np.unique(np.concatenate([[0, experts - 1], rng.integers(0, experts, size=max(0, samples - 2))])) if samples else []
+            for e in pick:
+                if down == "q5_1":
+                    err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values)
+                    worst, tail_max = max(worst, err), max(tail_max, tail)
+                    if err > TOL:
+                        writer.close()
+                        raise RuntimeError(f"{t.name} expert {e}: block error {err:.3e} > {TOL:.3e}; {dst} is incomplete")
+                else:
+                    rms, tail = lossy_check(np.asarray(t.data[e]), out[e], keep_values, down)
+                    worst_rms, tail_max = max(worst_rms, rms), max(tail_max, tail)
+            writer.write_tensor_data(out, tensor_endianess=reader.endianess)
+            pending += out.nbytes
             if pending >= sync_bytes:
                 _sync(writer)
                 pending = 0
-            continue
-        experts, rows, _ = t.data.shape
-        out = np.empty((experts, rows, keep_values // Q51_VALUES * Q51_BYTES), np.uint8)
-        for e0 in range(0, experts, CHUNK_EXPERTS):
-            out[e0:e0 + CHUNK_EXPERTS] = q4k_to_q5_1(t.data[e0:e0 + CHUNK_EXPERTS], keep_values)
-        pick = np.unique(np.concatenate([[0, experts - 1], rng.integers(0, experts, size=max(0, samples - 2))])) if samples else []
-        for e in pick:
-            err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values)
-            worst, tail_max = max(worst, err), max(tail_max, tail)
-            if err > TOL:
-                writer.close()
-                raise RuntimeError(f"{t.name} expert {e}: block error {err:.3e} > {TOL:.3e}; {dst} is incomplete")
-        writer.write_tensor_data(out, tensor_endianess=reader.endianess)
-        pending += out.nbytes
-        if pending >= sync_bytes:
-            _sync(writer)
-            pending = 0
-        done += 1
-        if progress:
-            progress(done, down, t.name, time.time() - t0, worst)
-    _sync(writer)
-    writer.close()
-    return {"source": src.name, "output": dst.name, "blocks_in": blocks_in, "blocks_out": blocks_out,
-            "down_tensors_converted": down, "dropped_tensors": dropped_names, "keep_values": keep_values,
-            "max_block_error": worst, "dropped_tail_max_abs": tail_max, "samples_per_tensor": samples,
-            "tolerance": TOL}
+            done += 1
+            if progress:
+                progress(done, n_down, t.name, time.time() - t0, worst if down == "q5_1" else worst_rms)
+        _sync(writer)
+        writer.close()
+    finally:
+        if pool is not None:
+            pool.shutdown()
+    return {"source": src.name, "output": dst.name, "blocks_in": blocks_in, "blocks_out": blocks_out, "down": down,
+            "down_tensors_converted": n_down, "dropped_tensors": dropped_names, "keep_values": keep_values,
+            "max_block_error": worst, "max_rms_error": worst_rms, "dropped_tail_max_abs": tail_max,
+            "samples_per_tensor": samples, "tolerance": TOL}
 
 
 def main(argv=None) -> int:
@@ -239,16 +348,25 @@ def main(argv=None) -> int:
     ap.add_argument("--keep", type=int, default=LOGICAL_IN, help="values kept per down row (default 640)")
     ap.add_argument("--samples", type=int, default=4, help="experts per down tensor compared against the source (default 4)")
     ap.add_argument("--sync-mib", type=int, default=256, help="flush the output to disk every N MiB (default 256)")
+    ap.add_argument("--split", nargs=2, type=int, metavar=("COUNT", "TENSORS"),
+                    help="write split.no 0 / split.count COUNT / split.tensors.count TENSORS (the file becomes shard 1 of "
+                         "COUNT beside the PLE table's GGUF: 2 1224 for the PLE shard of the GSQ-RCO Q2_0 model)")
+    ap.add_argument("--down", choices=sorted(CODECS), default="q5_1",
+                    help="type of the rewritten down experts: q5_1 = lossless repack (default), q4_0 / q2_0 = re-quantized, smaller")
+    ap.add_argument("--workers", type=int, default=1, help="worker processes for q4_0 / q2_0 (default 1)")
     a = ap.parse_args(argv)
 
     def progress(done, total, name, secs, worst):
-        print(f"  [{done:2d}/{total}] {name}  {secs:6.0f}s  worst block error so far {worst:.2e}", flush=True)
+        what = "worst block error" if a.down == "q5_1" else "worst relative RMS error"
+        print(f"  [{done:2d}/{total}] {name}  {secs:6.0f}s  {what} so far {worst:.2e}", flush=True)
 
-    m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress, sync_bytes=a.sync_mib << 20)
+    m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress, sync_bytes=a.sync_mib << 20,
+                split=tuple(a.split) if a.split else None, down=a.down, workers=a.workers)
     a.dst.with_suffix(a.dst.suffix + ".json").write_text(json.dumps(m, indent=1), encoding="utf-8")
-    print(f"done: {m['down_tensors_converted']} down tensors repacked, {len(m['dropped_tensors'])} MTP tensors dropped, "
-          f"blocks {m['blocks_in']} -> {m['blocks_out']}, worst sampled block error {m['max_block_error']:.2e} "
-          f"(limit {m['tolerance']:.2e}), largest value in the dropped columns {m['dropped_tail_max_abs']:.3g}")
+    err = (f"worst sampled block error {m['max_block_error']:.2e} (limit {m['tolerance']:.2e})" if m["down"] == "q5_1"
+           else f"worst sampled relative RMS error {m['max_rms_error']:.3f}")
+    print(f"done: {m['down_tensors_converted']} down tensors rewritten as {m['down']}, {len(m['dropped_tensors'])} MTP tensors dropped, "
+          f"blocks {m['blocks_in']} -> {m['blocks_out']}, {err}, largest value in the dropped columns {m['dropped_tail_max_abs']:.3g}")
     return 0
 
 

@@ -95,6 +95,56 @@ class Repack(unittest.TestCase):
             U.q4k_to_q5_1(self.src[:, :431], 640)  # not whole Q4_K blocks
 
 
+def rel_rms(a, b):
+    return float(np.sqrt(((a - b) ** 2).mean() / (a ** 2).mean()))
+
+
+class Codecs(unittest.TestCase):
+    """The smaller down types (4.5 and 2.25 bits per weight): lossy by design, so these check layout and error bounds."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(77)
+        self.src = make_q4k(self.rng, rows=24)
+        self.vals = quants.dequantize(self.src, Q.Q4_K).reshape(24, 768)[:, :640]
+
+    def test_q4_0(self):
+        out = U.q4k_to_codec(self.src, 640, "q4_0")
+        self.assertEqual(out.shape, (24, 20 * 18))
+        back = quants.dequantize(out, Q.Q4_0).reshape(24, 640)
+        self.assertLess(rel_rms(self.vals, back), 0.12)
+
+    def test_q2_0_is_read_back_by_strata_s_own_decoder(self):
+        import gguf_writer as gw          # tools/gguf_writer.py: the decoder the engine's fixtures are checked against
+        out = U.q4k_to_codec(self.src, 640, "q2_0")
+        self.assertEqual(out.shape, (24, 10 * 18))
+        back = np.stack([gw.dequantize_q2_0(out[i].tobytes()) for i in range(24)]).reshape(24, 640)
+        err = rel_rms(self.vals, back)
+        self.assertLess(err, 0.75)        # 2 bits: loose; encoding nothing would be 1.0
+        self.assertGreater(err, 0.05)     # and it really is 2-bit (a codec that copied the values would be ~0)
+
+    def test_q2_0_recovers_values_that_sit_on_its_grid(self):
+        import gguf_writer as gw
+        d = self.rng.uniform(0.01, 0.1, size=(8, 1)).astype(np.float16).astype(np.float32)
+        q = self.rng.integers(-1, 3, size=(8, 64)).astype(np.float32)
+        q[:, 0], q[:, 1] = 2, -1                       # make the scale unambiguous (both ends of the grid present)
+        x = (q * d).astype(np.float32).reshape(8, 64)
+        enc = U.encode_q2_0(x)
+        back = np.stack([gw.dequantize_q2_0(enc.reshape(8, 18)[i].tobytes()) for i in range(8)]).reshape(8, 64)
+        self.assertLess(float(np.abs(back - x).max() / np.abs(x).max()), 2e-3)
+
+    def test_unknown_codec_and_bad_width_are_refused(self):
+        with self.assertRaises(ValueError):
+            U.q4k_to_codec(self.src, 640, "q3_k")
+        with self.assertRaises(ValueError):
+            U.q4k_to_codec(self.src, 608, "q2_0")      # not whole 64-value blocks
+
+    def test_worker_processes_give_the_same_bytes(self):
+        a = U.q4k_to_codec(self.src.reshape(2, 12, 432), 640, "q2_0")
+        with U.make_pool(2) as pool:
+            b = U.encode_experts(pool, self.src.reshape(2, 12, 432), 640, "q2_0")
+        self.assertTrue(np.array_equal(a, b))
+
+
 def write_fixture(path, *, block_count=3, nextn=1, down_type=Q.Q4_K):
     """A tiny GGUF shaped like the real file: layers 0-1 + an embedded MTP layer 2, ds4 keys, a tokenizer."""
     rng = np.random.default_rng(99)
@@ -198,6 +248,21 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaises(ValueError):
             U.convert(other, self.dir / "y.gguf")
 
+    def test_split_metadata_makes_the_file_shard_one_of_a_pair(self):
+        # Strata's native loader takes the PLE table from a second GGUF and requires the first shard to say split.no 0,
+        # split.count > 1 and the same split.tensors.count as that second file (native_dense.cpp:88-99)
+        self.run_convert(split=(2, 7))
+        r = gguf.GGUFReader(str(self.dst))
+        self.assertEqual(r.get_field("split.no").contents(), 0)
+        self.assertEqual(r.get_field("split.count").contents(), 2)
+        self.assertEqual(r.get_field("split.tensors.count").contents(), 7)
+
+    def test_no_split_metadata_unless_asked(self):
+        self.run_convert()
+        r = gguf.GGUFReader(str(self.dst))
+        for k in ("split.no", "split.count", "split.tensors.count"):
+            self.assertNotIn(k, r.fields)
+
     def test_output_is_flushed_to_disk_as_it_goes(self):
         # the first real run wrote 600 MiB layers faster than the disk took them and the dirty pages pushed this PC's
         # free memory to 379 MB, so the writer must fsync every `sync_bytes` bytes, not only at the end
@@ -214,6 +279,21 @@ class EndToEnd(unittest.TestCase):
         with mock.patch("os.fsync", wraps=os.fsync) as fs:
             self.run_convert()
         self.assertGreaterEqual(fs.call_count, 1)
+
+    def test_down_codec_sets_the_tensor_type_and_shape(self):
+        for codec, qt, row in (("q4_0", Q.Q4_0, 360), ("q2_0", Q.Q2_0, 180)):
+            dst = self.dir / f"{codec}.gguf"
+            m = U.convert(self.src, dst, down=codec, workers=2)
+            self.assertEqual(m["down"], codec)
+            r = gguf.GGUFReader(str(dst))
+            downs = [t for t in r.tensors if t.name.endswith("ffn_down_exps.weight")]
+            self.assertEqual(len(downs), 2)
+            for t in downs:
+                self.assertEqual(t.tensor_type, qt, codec)
+                self.assertEqual([int(x) for x in t.shape], [640, 4, 2], codec)
+                self.assertEqual(np.asarray(t.data).shape, (2, 4, row), codec)
+            # lossy codecs report an RMS error instead of the block-error gate
+            self.assertGreater(m["max_rms_error"], 0.0)
 
     def test_the_output_is_not_overwritten(self):
         self.dst.write_bytes(b"x")
