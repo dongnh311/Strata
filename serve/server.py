@@ -1550,6 +1550,13 @@ def mcp_aliases(routes, offered, own) -> dict[str, str]:
             if len(fulls) == 1 and bare not in own and bare not in offered}
 
 
+# Added to the last tool result when the tool loop has used its last round, so that the final pass answers instead of asking
+# for one more tool (a pass that ends in a call has no answer: 5-6 of 15 research prompts ended empty). It goes at the END of
+# the prompt: the tools block at its start must stay as it was, or the engine's conversation cache is lost.
+TOOL_LIMIT_NOTE = ("[Tool limit reached: do not call any more tools. Write the final answer for the user now, "
+                   "using only what the tool results above contain.]")
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, aliases=None):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -1633,6 +1640,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
+        if rounds >= max_rounds:                         # the last round: the next pass must answer, not ask for another tool
+            messages[-1] = {**messages[-1], "content": messages[-1]["content"] + "\n\n" + TOOL_LIMIT_NOTE}
         ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
