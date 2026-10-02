@@ -145,6 +145,48 @@ class Codecs(unittest.TestCase):
         self.assertTrue(np.array_equal(a, b))
 
 
+def make_q2k(rng, rows, nb=3):
+    """Random valid Q2_K rows: scales[16], qs[64], d (fp16), dmin (fp16) = 84 bytes per 256 values."""
+    raw = rng.integers(0, 256, size=(rows, nb, 84), dtype=np.uint8)
+    for col, lo, hi in ((80, 0.002, 0.03), (82, 0.0005, 0.01)):
+        h = rng.uniform(lo, hi, size=(rows, nb)).astype(np.float16)
+        raw[:, :, col:col + 2] = h.view(np.uint8).reshape(rows, nb, 2)
+    return raw.reshape(rows, nb * 84)
+
+
+class FromQ2K(unittest.TestCase):
+    """The author's other file (Q2KDownPad768) has its down experts already at 2 bits, padded to 768 the same way."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(5)
+        self.src = make_q2k(self.rng, rows=24)
+        self.vals = quants.dequantize(self.src, Q.Q2_K).reshape(24, 768)[:, :640]
+
+    def test_q2_0_from_q2_k(self):
+        import gguf_writer as gw
+        out = U.q4k_to_codec(self.src, 640, "q2_0", src_type="q2_k")
+        self.assertEqual(out.shape, (24, 10 * 18))
+        back = np.stack([gw.dequantize_q2_0(out[i].tobytes()) for i in range(24)]).reshape(24, 640)
+        self.assertLess(rel_rms(self.vals, back), 0.75)
+
+    def test_q4_0_from_q2_k(self):
+        out = U.q4k_to_codec(self.src, 640, "q4_0", src_type="q2_k")
+        back = quants.dequantize(out, Q.Q4_0).reshape(24, 640)
+        self.assertLess(rel_rms(self.vals, back), 0.12)
+
+    def test_the_exact_repack_is_for_q4_k_only(self):
+        # 12 Q2_K blocks are 1008 bytes = 7 Q4_K blocks: the bytes are a legal Q4_K row, so only the guard stops the repack
+        src = make_q2k(self.rng, rows=4, nb=12)
+        self.assertEqual(src.shape[-1] % 144, 0)
+        with self.assertRaises(ValueError) as cm:
+            U.q4k_to_codec(src, 640, "q5_1", src_type="q2_k")
+        self.assertIn("Q4_K source only", str(cm.exception))
+
+    def test_unknown_source_type_is_refused(self):
+        with self.assertRaises(ValueError):
+            U.q4k_to_codec(self.src, 640, "q2_0", src_type="q3_k")
+
+
 def write_fixture(path, *, block_count=3, nextn=1, down_type=Q.Q4_K):
     """A tiny GGUF shaped like the real file: layers 0-1 + an embedded MTP layer 2, ds4 keys, a tokenizer."""
     rng = np.random.default_rng(99)
@@ -163,6 +205,8 @@ def write_fixture(path, *, block_count=3, nextn=1, down_type=Q.Q4_K):
     for layer in range(3):
         if down_type == Q.Q4_K:
             down = make_q4k(rng, rows=2 * 4).reshape(2, 4, 432)
+        elif down_type == Q.Q2_K:
+            down = make_q2k(rng, rows=2 * 4).reshape(2, 4, 252)
         else:
             down = rng.integers(0, 256, size=(2, 4, 480), dtype=np.uint8)
         tensors[f"blk.{layer}.ffn_down_exps.weight"] = (down, down_type)
@@ -294,6 +338,19 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(np.asarray(t.data).shape, (2, 4, row), codec)
             # lossy codecs report an RMS error instead of the block-error gate
             self.assertGreater(m["max_rms_error"], 0.0)
+
+    def test_a_q2_k_source_file(self):
+        other = self.dir / "q2k.gguf"
+        write_fixture(other, down_type=Q.Q2_K)
+        m = U.convert(other, self.dir / "from_q2k.gguf", down="q2_0", workers=2)
+        self.assertEqual(m["source_down_type"], "q2_k")
+        r = gguf.GGUFReader(str(self.dir / "from_q2k.gguf"))
+        downs = [t for t in r.tensors if t.name.endswith("ffn_down_exps.weight")]
+        self.assertEqual({t.tensor_type for t in downs}, {Q.Q2_0})
+        self.assertEqual([int(x) for x in downs[0].shape], [640, 4, 2])
+        with self.assertRaises(ValueError):                       # the lossless repack exists for Q4_K only ...
+            U.convert(other, self.dir / "x.gguf", down="q5_1")
+        self.assertFalse((self.dir / "x.gguf").exists())          # ... and it is refused BEFORE an output file is created
 
     def test_the_output_is_not_overwritten(self):
         self.dst.write_bytes(b"x")

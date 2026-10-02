@@ -136,24 +136,32 @@ def decode_q2_0(blocks: np.ndarray) -> np.ndarray:
     return ((codes - 1.0) * d).reshape(*blocks.shape[:-1], -1)
 
 
-def q4k_to_codec(raw, keep_values: int = LOGICAL_IN, codec: str = "q5_1") -> np.ndarray:
-    """Q4_K rows -> rows of the first `keep_values` values in `codec` ("q5_1" repack, "q4_0" / "q2_0" re-quantized)."""
+SOURCES = {"q4_k": Q.Q4_K, "q2_k": Q.Q2_K}      # the padded down types ds4 writes (the Q4K file and the Q2K file of the same repo)
+
+
+def q4k_to_codec(raw, keep_values: int = LOGICAL_IN, codec: str = "q5_1", src_type: str = "q4_k") -> np.ndarray:
+    """Padded K-quant rows -> rows of the first `keep_values` values in `codec` ("q5_1" repack, Q4_K source only; "q4_0" and
+    "q2_0" re-quantize the dequantized values, from Q4_K or Q2_K)."""
     if codec not in CODECS:
         raise ValueError(f"unknown down codec {codec!r} (choose from {sorted(CODECS)})")
+    if src_type not in SOURCES:
+        raise ValueError(f"unknown source type {src_type!r} (choose from {sorted(SOURCES)})")
     if codec == "q5_1":
+        if src_type != "q4_k":
+            raise ValueError("the lossless q5_1 repack exists for a Q4_K source only")
         return q4k_to_q5_1(raw, keep_values)
     _, per_block, block_bytes = CODECS[codec]
     if keep_values <= 0 or keep_values % per_block:
         raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {codec} blocks")
-    vals = quants.dequantize(np.ascontiguousarray(raw), Q.Q4_K)[..., :keep_values].astype(np.float32)
+    vals = quants.dequantize(np.ascontiguousarray(raw), SOURCES[src_type])[..., :keep_values].astype(np.float32)
     if codec == "q4_0":
         return np.asarray(quants.quantize(vals, Q.Q4_0))
     return encode_q2_0(vals).reshape(*vals.shape[:-1], keep_values // per_block * block_bytes)
 
 
 def _encode_job(job):
-    raw, keep_values, codec = job
-    return q4k_to_codec(raw, keep_values, codec)
+    raw, keep_values, codec, src_type = job
+    return q4k_to_codec(raw, keep_values, codec, src_type)
 
 
 def make_pool(workers: int):
@@ -161,15 +169,16 @@ def make_pool(workers: int):
     return ProcessPoolExecutor(max_workers=workers)
 
 
-def encode_experts(pool, raw: np.ndarray, keep_values: int, codec: str) -> np.ndarray:
+def encode_experts(pool, raw: np.ndarray, keep_values: int, codec: str, src_type: str = "q4_k") -> np.ndarray:
     """(experts, rows, bytes) -> (experts, rows, bytes') with one expert per job on the worker processes."""
-    jobs = [(np.ascontiguousarray(raw[e]), keep_values, codec) for e in range(raw.shape[0])]
+    jobs = [(np.ascontiguousarray(raw[e]), keep_values, codec, src_type) for e in range(raw.shape[0])]
     return np.stack(list(pool.map(_encode_job, jobs, chunksize=4)))
 
 
-def lossy_check(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int, codec: str) -> tuple[float, float]:
+def lossy_check(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int, codec: str,
+                src_type: str = "q4_k") -> tuple[float, float]:
     """(relative RMS error of the kept columns, largest |value| in the dropped columns) for one expert's rows."""
-    a = quants.dequantize(src_rows, Q.Q4_K)
+    a = quants.dequantize(src_rows, SOURCES[src_type])
     b = quants.dequantize(out_rows, Q.Q4_0) if codec == "q4_0" else decode_q2_0(out_rows)
     ref = a[..., :keep_values]
     rms = float(np.sqrt(((ref - b) ** 2).mean() / max((ref ** 2).mean(), 1e-30)))
@@ -236,6 +245,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
 
     plan = []                      # (tensor, action)  action: "copy" | "down" | "drop"
     n_down = 0
+    src_type = None                # "q4_k" or "q2_k": what the padded down experts of the source file are
     dropped_names = []
     for t in reader.tensors:
         m = _BLOCK.match(t.name)
@@ -245,14 +255,20 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
             continue
         if _DOWN.match(t.name):
             dims = [int(x) for x in t.shape]
-            if t.tensor_type != Q.Q4_K or dims[0] != PADDED_IN:
-                raise ValueError(f"{t.name} is {t.tensor_type.name} {dims}, expected the padded Q4_K [{PADDED_IN}, rows, experts]")
+            kind = {Q.Q4_K: "q4_k", Q.Q2_K: "q2_k"}.get(t.tensor_type)
+            if kind is None or dims[0] != PADDED_IN:
+                raise ValueError(f"{t.name} is {t.tensor_type.name} {dims}, expected a padded Q4_K or Q2_K [{PADDED_IN}, rows, experts]")
+            if src_type not in (None, kind):
+                raise ValueError(f"{t.name} is {kind} but an earlier down tensor was {src_type}")
+            src_type = kind
             plan.append((t, "down"))
             n_down += 1
         else:
             plan.append((t, "copy"))
     if n_down == 0:
         raise ValueError("no routed down tensors found")
+    if down == "q5_1" and src_type != "q4_k":
+        raise ValueError("the lossless q5_1 repack exists for a Q4_K source only; use --down q4_0 or q2_0 for a Q2_K file")
 
     writer = gguf.GGUFWriter(str(dst), "qwen4exp")
     for field in reader.fields.values():
@@ -306,11 +322,11 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                 continue
             experts, rows, _ = t.data.shape
             if pool is not None:
-                out = encode_experts(pool, t.data, keep_values, down)
+                out = encode_experts(pool, t.data, keep_values, down, src_type)
             else:
                 out = np.empty((experts, rows, row_out), np.uint8)
                 for e0 in range(0, experts, CHUNK_EXPERTS):
-                    out[e0:e0 + CHUNK_EXPERTS] = q4k_to_codec(t.data[e0:e0 + CHUNK_EXPERTS], keep_values, down)
+                    out[e0:e0 + CHUNK_EXPERTS] = q4k_to_codec(t.data[e0:e0 + CHUNK_EXPERTS], keep_values, down, src_type)
             pick = np.unique(np.concatenate([[0, experts - 1], rng.integers(0, experts, size=max(0, samples - 2))])) if samples else []
             for e in pick:
                 if down == "q5_1":
@@ -320,7 +336,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                         writer.close()
                         raise RuntimeError(f"{t.name} expert {e}: block error {err:.3e} > {TOL:.3e}; {dst} is incomplete")
                 else:
-                    rms, tail = lossy_check(np.asarray(t.data[e]), out[e], keep_values, down)
+                    rms, tail = lossy_check(np.asarray(t.data[e]), out[e], keep_values, down, src_type)
                     worst_rms, tail_max = max(worst_rms, rms), max(tail_max, tail)
             writer.write_tensor_data(out, tensor_endianess=reader.endianess)
             pending += out.nbytes
@@ -336,6 +352,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
         if pool is not None:
             pool.shutdown()
     return {"source": src.name, "output": dst.name, "blocks_in": blocks_in, "blocks_out": blocks_out, "down": down,
+            "source_down_type": src_type,
             "down_tensors_converted": n_down, "dropped_tensors": dropped_names, "keep_values": keep_values,
             "max_block_error": worst, "max_rms_error": worst_rms, "dropped_tail_max_abs": tail_max,
             "samples_per_tensor": samples, "tolerance": TOL}
