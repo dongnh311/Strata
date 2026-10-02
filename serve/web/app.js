@@ -564,6 +564,21 @@ function onTool(m, x) {
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
+// Make the children of `parent` the nodes of `html`, keeping every node that is already identical.  The answer used
+// to be assigned with innerHTML on every streamed chunk, which made each tool block (its icons and the pulsing dot of
+// a running call) a new element dozens of times a second: they flickered and the dot's blink restarted every time.
+// Here only what changed is replaced, so a finished block stays untouched while the text after it grows.
+function patchChildren(parent, html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const want = Array.from(tpl.content.childNodes);
+  want.forEach((node, i) => {
+    const have = parent.childNodes[i];
+    if (!have) parent.appendChild(node);
+    else if (!have.isEqualNode(node)) parent.replaceChild(node, have);
+  });
+  while (parent.childNodes.length > want.length) parent.removeChild(parent.lastChild);
+}
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
@@ -585,7 +600,7 @@ function updateAssistant(el, m, streaming) {
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
-    bubble.innerHTML = answerHtml(m);
+    patchChildren(bubble, answerHtml(m));
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
