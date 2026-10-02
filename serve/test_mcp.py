@@ -423,6 +423,35 @@ class ToolLoop(unittest.TestCase):
         self.assertTrue(mcp[-1].get("skipped"))
         self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
 
+    def test_the_last_round_is_told_to_answer(self):
+        """15 research prompts ended with an EMPTY answer when the tool loop reached max_rounds: the last pass was a
+        thinking-plus-call turn.  The last tool result now carries a note to answer; nothing earlier in the prompt
+        changes (the tools block at its start must stay byte-identical, or the engine's conversation cache is lost)."""
+        from serve.server import TOOL_LIMIT_NOTE
+        self.start(call_script("fake__echo", text="again"))          # max_rounds is 2; the model never stops calling
+        self.post({"strata_mcp": True})
+        self.assertEqual(len(self.engine.prompts), 3)
+        p0, p1, p2 = (self.engine.prompt_text(i) for i in range(3))
+        self.assertNotIn(TOOL_LIMIT_NOTE, p0)
+        self.assertNotIn(TOOL_LIMIT_NOTE, p1)                        # a round is still left: no note yet
+        self.assertIn(TOOL_LIMIT_NOTE, p2)
+        last = p2.rindex("<tool_response>")
+        block = p2[last:p2.index("</tool_response>", last)]
+        self.assertIn(TOOL_LIMIT_NOTE, block)                        # inside the LAST tool result ...
+        self.assertIn("again", block)                                # ... which keeps what the tool returned
+        base = p1[:p1.rindex("</tool_response>") + len("</tool_response>")]
+        self.assertTrue(p2.startswith(base))                         # everything before it is unchanged
+
+    def test_an_answer_after_the_note_is_delivered(self):
+        from serve.server import TOOL_LIMIT_NOTE
+        self.start(call_script("fake__echo", text="a"), call_script("fake__echo", text="b"), "</think>\n\nHere is the answer.")
+        code, text = self.post({"strata_mcp": True})
+        cs = self.chunks(text)
+        self.assertEqual(code, 200)
+        self.assertIn("Here is the answer.", "".join((c["choices"][0]["delta"].get("content") or "") for c in cs))
+        self.assertIn(TOOL_LIMIT_NOTE, self.engine.prompt_text(2))
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""
         self.start(call_script("fake__sleep", seconds=8), "</think>\n\nnever")
