@@ -1,0 +1,20 @@
+[
+ {
+  "id": "cpp-gcd",
+  "lang": "cpp",
+  "pass": true,
+  "turns": 3,
+  "cc_error": false,
+  "secs": 19.0,
+  "detail": "rc=0 out=12"
+ },
+ {
+  "id": "kotlin-gcd",
+  "lang": "kotlin",
+  "pass": true,
+  "turns": 14,
+  "cc_error": false,
+  "secs": 260.8,
+  "detail": "rc=0 out=12"
+ }
+]

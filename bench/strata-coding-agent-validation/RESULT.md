@@ -59,7 +59,7 @@ Driven by Claude Code, this Strata model works as a long-context coding agent. A
 | 0 Integration | must pass | ✅ Claude Code drives Strata; tool protocol holds |
 | 1 Recall | ≥70% at your depth | ✅ 100% (3/3) to 437K tokens, no degradation |
 | 2 Tool use | ≥95% valid | ✅ 100%; 11/11 sessions clean, up to 11 turns |
-| 3 Correctness | ≥70% pass | ✅ 7/7 checkable (Python, Rust, JS, Java) |
+| 3 Correctness | ≥70% pass | ✅ 9/9 across Python, Rust, JS, Java, C++, Kotlin |
 | 4 Speed | usable at your depth | ⚠️ warm turns fast (~37 tok/s); **cold load of a big context is slow (4–16 min)** |
 
 **Use it as a main coding model** via Claude Code, keeping these in mind:
@@ -69,9 +69,10 @@ Driven by Claude Code, this Strata model works as a long-context coding agent. A
 2. **Usable context ≈ 475K tokens** of your code (not the full 512K) through Claude Code.
 3. **Cold load is the cost, and it is minutes** (≈4 min at 156K, ≈10 min at 312K, ≈16 min near the top). Load a big
    repo/context once and work within it — warm turns are 1–2 s. Avoid re-sending huge cold contexts.
-4. **C++/Kotlin correctness was not verified here** (no `cl.exe`/`vcvars`/`kotlinc` on the agent's PATH). Rust (a
-   systems language) passed cleanly, so this is a harness gap, not a known model weakness; verify C++/Kotlin in real
-   use or put those compilers on the agent's PATH.
+4. **C++ and Kotlin now verified** (after putting `cl`/`kotlinc` on the agent's PATH): 1/1 each. For real daily use
+   in those languages, the agent's shell needs a working compiler on PATH — MSVC `cl` via `vcvars` (set
+   `MSYS_NO_PATHCONV=1` so its `/flags` survive git-bash) or a portable `g++`, and a portable `kotlinc`; see
+   `run_compiled.py` for the exact setup.
 5. **Serial FIFO**: Strata serves one request at a time, so parallel subagents queue — they are not a speed win.
 6. The model is **uncensored** (refusal projection on); keep that in mind for shell commands it may run without a caveat.
 
@@ -105,14 +106,15 @@ automated check (exit 0). Thinking off by default. Driver: `run_correctness.py`.
 | rust-borrowfix (`cargo test`) | Rust | ✅ pass | 4 | 48 |
 | js-dedupe (node, exact output) | Node | ✅ pass | 3 | 51 |
 | java-reverse (`javac`+`java`, exact output) | Java | ✅ pass | 3 | 55 |
-| cpp-gcd (MSVC compile+run) | C++ | ⚠️ inconclusive | 19 | 279 |
+| cpp-gcd (MSVC `cl` compile+run) | C++ | ✅ pass† | 3 | 19 |
+| kotlin-gcd (`kotlinc`+`java -jar`) | Kotlin | ✅ pass† | 14 | 261 |
 
-The model wrote correct, checkable code in Python, Rust, JS and Java — 7/7 of the tasks with a working toolchain on
-the agent's PATH. The one miss, **cpp-gcd, is a toolchain gap, not a model failure**: the headless agent's shell has
-no C++ compiler on PATH (MSVC `cl.exe` needs a `vcvars64` environment), so the model could not compile/verify C++
-(it spun 19 turns trying), and the check's own `vcvars64` call failed on `vswhere`. To validate C++/Kotlin fairly,
-the agent needs `cl.exe`/`g++`/`kotlinc` on PATH; **Kotlin was not run (no `kotlinc` installed); Java stands in for
-the JVM.** This says nothing about whether the model can write C++/Kotlin — only that the harness could not check it.
+**9/9 across six languages** (Python, Rust, JS, Java, C++, Kotlin). †The C++ and Kotlin tasks are the follow-up run
+(`run_compiled.py`) after putting compilers on the agent's PATH — MSVC `cl` via a captured `vcvars` environment
+(with `MSYS_NO_PATHCONV` so `/flags` survive git-bash) and a portable `kotlinc`. On the first pass these two were
+blocked purely by the missing toolchain (cpp spun 19 turns with no compiler); with a compiler present the model
+wrote correct, compiling code in both — C++ in 3 turns, Kotlin in 14 (its extra turns were the slow `kotlinc`
+compile-feedback loop, not wrong code).
 
 ## Dimension 4 — Speed at depth (2026-10-03)
 
