@@ -467,6 +467,139 @@ int check_q5_1_min(cudaStream_t s) {
                 "(largest per-block sum shift %.3g)  %s\n", e_q, e_s, shift, ok ? "ok" : "FAIL");
     return ok ? 0 : 1;
 }
+// ---- Q4_1 down = the Q5_1 down with the fifth bits left out (tools/unpad_down.py --down q4_1 / --down q5_1 of one ds4
+// Q4_K file write the same d, m and 4-bit codes; the q5_1 fifth bits are all zero).  The same weights must give BITWISE
+// equal results on every path the engine runs an expert on: the CPU rows (ggml-cpu's vec_dot), the GPU expert
+// (native_expert_grouped) and the GPU dequantizers of the prompt path.  A negative control then flips one code of the
+// Q4_1 blob and requires the GPU output to change, so the comparison is shown able to fail.
+std::vector<float> cpu_expert(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, const std::vector<float>& x) {
+    std::vector<std::vector<uint8_t>> act(NT, std::vector<uint8_t>(cpu::kNativeActBytes));
+    std::vector<std::vector<uint8_t>> hq(NT, std::vector<uint8_t>(cpu::kNativeHBytes));
+    std::vector<std::vector<float>> ff(NT, std::vector<float>(FF));
+    std::vector<float> out((size_t) NT * H);
+    const void* a[NT];
+    float* ffp[NT];
+    const void* hp[NT];
+    float* op[NT];
+    for (int k = 0; k < NT; ++k) {
+        cpu::native_quant_act(f, x.data() + k * H, act[k].data());
+        a[k] = act[k].data();
+        ffp[k] = ff[k].data();
+    }
+    cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
+    for (int k = 0; k < NT; ++k) {
+        cpu::native_quant_h(f, ff[k].data(), hq[k].data());
+        hp[k] = hq[k].data();
+        op[k] = out.data() + k * H;
+    }
+    cpu::native_down_rows(f, blob.data(), hp, NT, op, 0, (int) H);
+    return out;
+}
+
+std::vector<float> gpu_expert(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, const std::vector<float>& x,
+                              cudaStream_t s) {
+    const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF);
+    void *dblob, *dx, *dxq, *dscr;
+    float* dout;
+    unsigned long long* dptr;
+    int32_t *dstart, *dn, *ddst, *dtok;
+    cudaMalloc(&dblob, blob.size());
+    cudaMalloc(&dx, x.size() * 4);
+    cudaMalloc(&dxq, (size_t) NT * H / 32 * 36);
+    cudaMalloc(&dscr, strata::kernels::native_expert_scratch_bytes(NT, FF));
+    cudaMalloc((void**) &dout, (size_t) NT * H * 4);
+    cudaMalloc((void**) &dptr, 8);
+    cudaMalloc((void**) &dstart, 8);
+    cudaMalloc((void**) &dn, 4);
+    cudaMalloc((void**) &ddst, NT * 4);
+    cudaMalloc((void**) &dtok, NT * 4);
+    cudaMemcpy(dblob, blob.data(), blob.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+    const unsigned long long p = (unsigned long long) dblob;
+    const int32_t st[2] = {0, NT}, one = 1, idx[NT] = {0, 1, 2};
+    cudaMemcpy(dptr, &p, 8, cudaMemcpyHostToDevice);
+    cudaMemcpy(dstart, st, 8, cudaMemcpyHostToDevice);
+    cudaMemcpy(dn, &one, 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(ddst, idx, NT * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(dtok, idx, NT * 4, cudaMemcpyHostToDevice);
+    strata::kernels::quantize_q8_1_rows((const float*) dx, NT, H, dxq, s);
+    strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
+    cudaStreamSynchronize(s);
+    std::vector<float> out((size_t) NT * H);
+    cudaMemcpy(out.data(), dout, out.size() * 4, cudaMemcpyDeviceToHost);
+    cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
+    cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
+    return out;
+}
+
+// the down part of a blob through the prompt path's GPU dequantizers: f32 values, then the f16 ones widened
+std::vector<float> gpu_down_dequant(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, cudaStream_t s) {
+    const size_t bytes = blob.size() - f.down_off;
+    void* src = nullptr;
+    float* d32 = nullptr;
+    uint16_t* d16 = nullptr;
+    cudaMalloc(&src, bytes);
+    cudaMalloc((void**) &d32, (size_t) H * FF * 4);
+    cudaMalloc((void**) &d16, (size_t) H * FF * 2);
+    cudaMemcpy(src, blob.data() + f.down_off, bytes, cudaMemcpyHostToDevice);
+    strata::kernels::iq_dequant_f32(f.d_type, src, H * FF, d32, s);
+    strata::kernels::iq_dequant_f16(f.d_type, src, H * FF, d16, s);
+    cudaStreamSynchronize(s);
+    std::vector<float> out((size_t) 2 * H * FF);
+    std::vector<uint16_t> h((size_t) H * FF);
+    cudaMemcpy(out.data(), d32, (size_t) H * FF * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h.data(), d16, h.size() * 2, cudaMemcpyDeviceToHost);
+    for (size_t i = 0; i < h.size(); ++i) out[(size_t) H * FF + i] = ggml_fp16_to_fp32(h[i]);
+    cudaFree(src); cudaFree(d32); cudaFree(d16);
+    return out;
+}
+
+size_t bits_differ(const std::vector<float>& a, const std::vector<float>& b) {
+    size_t n = 0;
+    for (size_t i = 0; i < a.size(); ++i) n += std::memcmp(&a[i], &b[i], 4) != 0;
+    return n;
+}
+
+// the Q5_1 blob holding the same weights as a Q4_1 one: per 32-value block d, m, then qh = 0, then the 16 code bytes
+std::vector<uint8_t> q5_1_twin(const cpu::NativeFmt& f4, const std::vector<uint8_t>& b4, const cpu::NativeFmt& f5) {
+    std::vector<uint8_t> b5(f5.bytes, 0);
+    std::memcpy(b5.data(), b4.data(), f4.down_off);   // gate and up are the same bytes
+    const size_t blocks = (b4.size() - f4.down_off) / 20;
+    for (size_t i = 0; i < blocks; ++i) {
+        const uint8_t* s = b4.data() + f4.down_off + i * 20;
+        uint8_t* d = b5.data() + f5.down_off + i * 24;
+        std::memcpy(d, s, 4);
+        std::memcpy(d + 8, s + 4, 16);
+    }
+    return b5;
+}
+
+int check_q4_1_pair(const cpu::NativeFmt& f5, const std::vector<uint8_t>& b5, const cpu::NativeFmt& f4,
+                    const std::vector<uint8_t>& b4, const std::string& label, cudaStream_t s) {
+    std::mt19937 rng(41);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<float> x((size_t) NT * H);
+    for (auto& v : x) v = nd(rng);
+    // the fifth bits of the Q5_1 down must all be zero, or the two blobs do not hold the same weights
+    size_t fifth = 0;
+    for (size_t i = f5.down_off; i < b5.size(); i += 24) fifth += (b5[i + 4] | b5[i + 5] | b5[i + 6] | b5[i + 7]) != 0;
+    const auto c5 = cpu_expert(f5, b5, x), c4 = cpu_expert(f4, b4, x);
+    const auto g5 = gpu_expert(f5, b5, x, s), g4 = gpu_expert(f4, b4, x, s);
+    const auto d5 = gpu_down_dequant(f5, b5, s), d4 = gpu_down_dequant(f4, b4, s);
+    const size_t dc = bits_differ(c5, c4), dg = bits_differ(g5, g4), dd = bits_differ(d5, d4);
+    // negative control: one code of the first down block changed (0 <-> 15 in its low nibble)
+    std::vector<uint8_t> bad = b4;
+    bad[f4.down_off + 4] ^= 0x0F;
+    const size_t dneg = bits_differ(gpu_expert(f4, bad, x, s), g4);
+    const bool ok = fifth == 0 && dc == 0 && dg == 0 && dd == 0 && dneg > 0 && std::isfinite(rel(g4, c4));
+    std::printf("%-9s %s/%s vs %s/%s: fifth bits set in %zu blocks; values that differ in any bit - cpu %zu of %zu, "
+                "gpu %zu of %zu, dequant f32+f16 %zu of %zu; one flipped code changes %zu gpu values; cpu-gpu rel %.2e  %s\n",
+                label.c_str(), ggml_type_name((ggml_type) f4.gu_type), ggml_type_name((ggml_type) f4.d_type),
+                ggml_type_name((ggml_type) f5.gu_type), ggml_type_name((ggml_type) f5.d_type), fifth, dc, c4.size(), dg,
+                g4.size(), dd, d4.size(), dneg, rel(g4, c4), ok ? "ok" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 // #290: the BF16 token embedding (--embd-gguf) - iq_embed_rows and iq_dequant_f32 on a random BF16 table against
 // the exact widening (bits << 16), every bit; rows gathered out of order, with repeats
 int check_bf16_embd(cudaStream_t s) {
@@ -528,6 +661,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"
                              "       native_expert_parity --q5_1-min\n"
+                             "       native_expert_parity --q4_1-pair GU ...            (Q4_1 down vs its Q5_1 twin)\n"
+                             "       native_expert_parity --q4_1-pair-gguf <q5_1 shard> <q4_1 shard> [layer ...]\n"
                              "       native_expert_parity --bf16-embd\n");
         return 2;
     }
@@ -547,6 +682,59 @@ int main(int argc, char** argv) {
         failures += check_q5_1_min(s);
     } else if (mode == "--bf16-embd") {
         failures += check_bf16_embd(s);
+    } else if (mode == "--q4_1-pair") {
+        // synthetic: gate/up of each named type, a Q4_1 down quantized by ggml and its Q5_1 twin
+        for (int i = 2; i < argc; ++i) {
+            const int gu = type_of(argv[i]);
+            cpu::NativeFmt f4, f5;
+            std::string err;
+            if (gu < 0 || !cpu::native_fmt(gu, GGML_TYPE_Q4_1, H, FF, f4, err) ||
+                !cpu::native_fmt(gu, GGML_TYPE_Q5_1, H, FF, f5, err) ||
+                !strata::kernels::native_expert_supported(gu, GGML_TYPE_Q4_1, H, FF)) {
+                std::printf("%s/q4_1: %s\n", argv[i], err.empty() ? "not a pair the GPU expert kernels take" : err.c_str());
+                ++failures;
+                continue;
+            }
+            const auto b4 = synthetic_blob(f4, 100 + i);
+            failures += check_blob(f4, b4, i, "synthetic", s);
+            failures += check_q4_1_pair(f5, q5_1_twin(f4, b4, f5), f4, b4, "synthetic", s);
+        }
+    } else if (mode == "--q4_1-pair-gguf") {
+        // real rows: expert E of each layer from a q5_1 file and the q4_1 file made from the same source
+        if (argc < 4) { std::fprintf(stderr, "usage: native_expert_parity --q4_1-pair-gguf <q5_1 shard> <q4_1 shard> [layer ...]\n"); return 2; }
+        const strata::GgufModel m5(strata::gguf_split_paths(argv[2])), m4(strata::gguf_split_paths(argv[3]));
+        std::vector<int> layers;
+        for (int i = 4; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
+        if (layers.empty()) layers = {0, 1, 2, 3, 20, 47};
+        auto blob_of = [&](const strata::GgufModel& m, int l, cpu::NativeFmt& f, std::vector<uint8_t>& blob) {
+            const strata::TensorInfo* t[3] = {};
+            const uint8_t* data[3] = {};
+            const char* roles[3] = {"gate", "up", "down"};
+            for (int r = 0; r < 3; ++r) {
+                size_t at = 0;
+                t[r] = m.find("blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight", &at);
+                if (t[r]) data[r] = m.shard(at).tensor_data(*t[r]);
+            }
+            std::string err;
+            if (!t[0] || !t[1] || !t[2] || !cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) return false;
+            blob.assign(f.bytes, 0);
+            std::memcpy(blob.data(), data[0] + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.up_off, data[1] + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.down_off, data[2] + (size_t) E * (f.bytes - f.down_off), f.bytes - f.down_off);
+            return true;
+        };
+        for (int l : layers) {
+            cpu::NativeFmt f5, f4;
+            std::vector<uint8_t> b5, b4;
+            if (!blob_of(m5, l, f5, b5) || !blob_of(m4, l, f4, b4) || f5.d_type != GGML_TYPE_Q5_1 ||
+                f4.d_type != GGML_TYPE_Q4_1 || f5.gu_type != f4.gu_type ||
+                std::memcmp(b5.data(), b4.data(), f4.down_off) != 0) {
+                std::printf("layer %d: not a q5_1 / q4_1 pair with the same gate/up bytes\n", l);
+                ++failures;
+                continue;
+            }
+            failures += check_q4_1_pair(f5, b5, f4, b4, "layer " + std::to_string(l), s);
+        }
     } else if (mode == "--synthetic") {
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];

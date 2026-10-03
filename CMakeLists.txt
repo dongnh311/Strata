@@ -959,6 +959,10 @@ if(STRATA_NATIVE_EXPERTS)
         set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
       endforeach()
       add_test(NAME native_expert_parity_q5_1_min COMMAND native_expert_parity --q5_1-min)
+      # a ds4 Q4_K down repacked to Q4_1 (tools/unpad_down.py --down q4_1): bitwise equal to its Q5_1 twin on the CPU,
+      # the GPU and the prompt dequantizers, with the IQ2_XXS gate/up of unc48L and the Q4_K of UD-Q4_K_XL
+      add_test(NAME native_expert_parity_q4_1_pair COMMAND native_expert_parity --q4_1-pair iq2_xxs q4_K)
+      set_tests_properties(native_expert_parity_q4_1_pair PROPERTIES TIMEOUT 180)
       # #290: the BF16 token embedding (--embd-gguf) gathered and dequantized bit for bit
       add_test(NAME native_expert_parity_bf16_embd COMMAND native_expert_parity --bf16-embd)
       # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run
