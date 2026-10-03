@@ -36,9 +36,28 @@ _pending_
 
 _pending_
 
-## Dimension 3 — Code correctness (Rust / C++ / Kotlin / …)
+## Dimension 3 — Code correctness: **7/8 pass** (2026-10-03)
 
-_pending_
+Each task: a fresh scratch repo, driven headless (`claude -p … --dangerously-skip-permissions`), scored by an
+automated check (exit 0). Thinking off by default. Driver: `run_correctness.py`.
+
+| Task | Lang | Result | Turns | Secs |
+| :--- | :--- | :--- | --: | --: |
+| py-fizzbuzz-test (write to pass a test) | Python | ✅ pass | 4 | 53 |
+| py-bugfix (even-length median) | Python | ✅ pass | 6 | 56 |
+| py-multifile (add `mul`, keep `add`) | Python | ✅ pass | 5 | 46 |
+| rust-palindrome (`cargo test`) | Rust | ✅ pass | 8 | 83 |
+| rust-borrowfix (`cargo test`) | Rust | ✅ pass | 4 | 48 |
+| js-dedupe (node, exact output) | Node | ✅ pass | 3 | 51 |
+| java-reverse (`javac`+`java`, exact output) | Java | ✅ pass | 3 | 55 |
+| cpp-gcd (MSVC compile+run) | C++ | ⚠️ inconclusive | 19 | 279 |
+
+The model wrote correct, checkable code in Python, Rust, JS and Java — 7/7 of the tasks with a working toolchain on
+the agent's PATH. The one miss, **cpp-gcd, is a toolchain gap, not a model failure**: the headless agent's shell has
+no C++ compiler on PATH (MSVC `cl.exe` needs a `vcvars64` environment), so the model could not compile/verify C++
+(it spun 19 turns trying), and the check's own `vcvars64` call failed on `vswhere`. To validate C++/Kotlin fairly,
+the agent needs `cl.exe`/`g++`/`kotlinc` on PATH; **Kotlin was not run (no `kotlinc` installed); Java stands in for
+the JVM.** This says nothing about whether the model can write C++/Kotlin — only that the harness could not check it.
 
 ## Dimension 4 — Speed at depth
 
