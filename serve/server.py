@@ -494,9 +494,15 @@ class StrataEngine:
     @staticmethod
     def projection_key(sampling: dict) -> str:
         """`cvec=0|1`: the experimental-speed-projection control vector for this request, when the engine was
-        started with one (--control-vector-scaled; an engine without one ignores the key).  Absent = on."""
+        started with one (--control-vector-scaled; an engine without one ignores the key).  Absent = on.
+        `cvecscale=<f>`: its strength (global, not per-request; the engine drops the conversation cache when it
+        changes).  Absent = keep the current strength (the loaded 1.0 until something sets it)."""
         on = sampling.get("experimental_speed_projection")
-        return f" cvec={int(on)}" if isinstance(on, bool) else ""
+        out = f" cvec={int(on)}" if isinstance(on, bool) else ""
+        sc = sampling.get("projection_scale")
+        if isinstance(sc, (int, float)) and not isinstance(sc, bool) and 0.0 <= float(sc) <= 4.0:
+            out += f" cvecscale={float(sc)!r}"
+        return out
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
@@ -2875,7 +2881,8 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
     return out
 
 
-SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection")
+SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection",
+               "projection_scale")
 
 
 def clean_shared_defaults(d) -> dict:
@@ -2909,6 +2916,10 @@ def clean_shared_defaults(d) -> dict:
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise ValueError("experimental_speed_projection: true or false")
+        elif key == "projection_scale":
+            if not number or not 0 <= value <= 4:
+                raise ValueError("projection_scale: 0..4 (the control vector's strength; 1 = the loaded scale)")
+            value = float(value)
         else:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value
@@ -2968,6 +2979,11 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true or "
                                  "false (the default for requests that leave it out, when the engine has the vector)")
             out[key] = value
+        elif key == "projection_scale":
+            if not number or not 0 <= value <= 4:
+                raise SystemExit(f"[strata] config sampling.projection_scale={value!r}: expected 0..4 "
+                                 "(the control vector's strength; 1 = the loaded scale)")
+            out[key] = float(value)
         else:
             print(f"[strata] config sampling.{key}={value!r}: unknown key, ignored", flush=True)
     return out

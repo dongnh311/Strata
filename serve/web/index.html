@@ -204,9 +204,14 @@
     <div class="toggle-row" id="mcp-row" hidden><span>Use tools from MCP servers<br><span class="muted small"
       id="mcp-row-sub">the model may call them while it answers</span></span>
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers"></button></div>
-    <div class="toggle-row" id="esp-row" hidden><span>Experimental speed projection<br><span class="muted small">the
-      engine's control vector; off = the stock model. Switching reads the chat again once</span></span>
-      <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection"></button></div>
+    <div class="toggle-row" id="esp-row" hidden><span>Bỏ kiểm duyệt (Uncensored)<br><span class="muted small">vector bỏ
+      kiểm duyệt của engine; tắt = model gốc. Bật/tắt sẽ đọc lại đoạn chat một lần</span></span>
+      <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Bỏ kiểm duyệt (Uncensored)"></button></div>
+    <div class="st-field" id="esp-scale-row" hidden>
+      <label class="st-label" for="s-esp-scale">Cường độ bỏ kiểm duyệt <output id="o-esp-scale"></output></label>
+      <input class="st-slider" type="range" id="s-esp-scale" min="0" max="1.5" step="0.05" value="1">
+      <span class="muted small">0 = model gốc, 1 = đầy đủ. Chung cho mọi request; đổi sẽ đọc lại đoạn chat một lần</span>
+    </div>
     <div class="toggle-row"><span>Use for other apps too<br><span class="muted small">omp and other API clients get
       these settings for anything they don't set themselves</span></span>
       <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too"></button></div>

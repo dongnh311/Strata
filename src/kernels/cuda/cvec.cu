@@ -13,9 +13,10 @@ constexpr int MAXK = 16;   // n_embd up to 4096, held in registers between the d
 
 Cvec g_cvec;                 // the description; its device pointers are the uploading device's
 bool g_on_host = false;
+float g_scale_host = 1.0f;   // the strength the vector is applied at while on (cvec_set_scale); 1.0 = the loaded scale
 // the tables on every device that holds them (a layer split applies the vector on several)
 constexpr int kDevices = 64;
-struct DevTables { float* dir = nullptr; float* s = nullptr; int* on = nullptr; };
+struct DevTables { float* dir = nullptr; float* s = nullptr; float* scale = nullptr; };
 DevTables g_dev[kDevices];
 std::vector<float> g_dir_host, g_s_host;
 int cur_device() {
@@ -26,12 +27,12 @@ int cur_device() {
 bool upload_here(std::string& err) {
     DevTables& t = g_dev[cur_device()];
     if (t.dir != nullptr) return true;
-    const int flag = g_on_host ? 1 : 0;
+    const float flag = g_on_host ? g_scale_host : 0.0f;
     if (cudaMalloc(&t.dir, g_dir_host.size() * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&t.s, g_s_host.size() * sizeof(float)) != cudaSuccess || cudaMalloc(&t.on, sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&t.s, g_s_host.size() * sizeof(float)) != cudaSuccess || cudaMalloc(&t.scale, sizeof(float)) != cudaSuccess ||
         cudaMemcpy(t.dir, g_dir_host.data(), g_dir_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.s, g_s_host.data(), g_s_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
-        cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaMemcpy(t.scale, &flag, sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
         err = "control vector: device allocation failed";
         t = DevTables{};
         return false;
@@ -44,14 +45,14 @@ __device__ __forceinline__ float sigmoidf_(float x) { return 1.0f / (1.0f + __ex
 
 // one block per (stream, token): the pending write, then h . v over the stream, then the update
 __global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir, const float* __restrict__ s_l,
-                            const int* __restrict__ on, int mode, int64_t layer, int n, int hc, int64_t r_ld,
+                            const float* __restrict__ scale, int mode, int64_t layer, int n, int hc, int64_t r_ld,
                             const float* __restrict__ bo, int64_t bo_ld, const float* __restrict__ inj,
                             int64_t inj_ld, int write) {
     const int c = blockIdx.x;
     const int64_t t = blockIdx.y;
     float* r = R + t * r_ld + (int64_t) c * n;
-    const float s = s_l[layer];
-    const bool steer = *on != 0 && s != 0.0f;   // uniform over the block
+    const float s = s_l[layer] * (*scale);      // the per-layer scale times the request's strength multiplier
+    const bool steer = s != 0.0f;               // uniform over the block (scale 0 = off, or the layer is not steered)
     if (!steer && !write) return;
     const float* v = dir + layer * n;
     const float w = write ? 2.0f * sigmoidf_(inj[t * inj_ld + c] / (float) hc) : 0.0f;
@@ -88,7 +89,8 @@ __global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir
         const int d = threadIdx.x + k * THREADS;
         if (d < n) {
             float xv = x[k];
-            if (steer) xv = mode == 0 ? fmaf(-dot, v[d], xv) : xv + v[d];
+            // project: h -= s_l*scale*(h.v)*v (dot already carries s_l*scale);  add: h += scale*d_l (s = s_l*scale, s_l = 1)
+            if (steer) xv = mode == 0 ? fmaf(-dot, v[d], xv) : fmaf(s, v[d], xv);
             r[d] = xv;
         }
     }
@@ -110,18 +112,19 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
         cudaDeviceSynchronize();
         cudaFree(g_dev[d].dir);
         cudaFree(g_dev[d].s);
-        cudaFree(g_dev[d].on);
+        cudaFree(g_dev[d].scale);
         g_dev[d] = DevTables{};
     }
     cudaSetDevice(prev);
     g_dir_host = dir;
     g_s_host = s;
     g_on_host = true;
+    g_scale_host = 1.0f;   // a freshly loaded vector starts at its loaded strength
     if (!upload_here(err)) return false;
     const DevTables& t = g_dev[cur_device()];
     g_cvec.dir = t.dir;
     g_cvec.s = t.s;
-    g_cvec.on = t.on;
+    g_cvec.scale = t.scale;
     g_cvec.mode = mode;
     g_cvec.first = first;
     g_cvec.last = last;
@@ -134,22 +137,35 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
 
 bool cvec_replicate(std::string& err) { return !g_cvec.loaded() || upload_here(err); }
 
-void cvec_set_enabled(bool on) {
-    if (!g_cvec.loaded() || on == g_on_host) return;
+// Push the device strength (on ? g_scale_host : 0) to every device holding the vector.
+static void push_scale() {
     int prev = 0;
     cudaGetDevice(&prev);
-    const int v = on ? 1 : 0;
+    const float v = g_on_host ? g_scale_host : 0.0f;
     for (int d = 0; d < kDevices; ++d) {
-        if (g_dev[d].on == nullptr) continue;
+        if (g_dev[d].scale == nullptr) continue;
         cudaSetDevice(d);
-        cudaDeviceSynchronize();   // nothing in flight may still read the flag
-        cudaMemcpy(g_dev[d].on, &v, sizeof(int), cudaMemcpyHostToDevice);
+        cudaDeviceSynchronize();   // nothing in flight may still read the multiplier
+        cudaMemcpy(g_dev[d].scale, &v, sizeof(float), cudaMemcpyHostToDevice);
     }
     cudaSetDevice(prev);
+}
+
+void cvec_set_enabled(bool on) {
+    if (!g_cvec.loaded() || on == g_on_host) return;
     g_on_host = on;
+    push_scale();
 }
 
 bool cvec_enabled() { return g_cvec.loaded() && g_on_host; }
+
+void cvec_set_scale(float scale) {
+    if (!g_cvec.loaded() || scale == g_scale_host) return;
+    g_scale_host = scale;
+    if (g_on_host) push_scale();   // off: the new strength takes effect when it is switched on
+}
+
+float cvec_scale() { return g_scale_host; }
 
 void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* bo, int64_t bo_ld, const float* inj,
                 int64_t inj_ld, bool write, void* stream) {
@@ -157,7 +173,7 @@ void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* b
     const DevTables& t = g_dev[cur_device()];
     if (t.dir == nullptr) throw std::runtime_error("cvec_apply: the control vector is not on this device (cvec_replicate)");
     const dim3 grid((unsigned) g_cvec.hc, (unsigned) T);
-    cvec_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(R, t.dir, t.s, t.on, g_cvec.mode, layer,
+    cvec_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(R, t.dir, t.s, t.scale, g_cvec.mode, layer,
                                                             (int) g_cvec.n_embd, (int) g_cvec.hc, r_ld, bo, bo_ld,
                                                             inj, inj_ld, write ? 1 : 0);
     if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("cvec_apply: launch failed");

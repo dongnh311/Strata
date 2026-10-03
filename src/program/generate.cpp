@@ -5073,6 +5073,7 @@ int main(int argc, char** argv) {
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            double req_cvec_scale = -1.0;   // cvecscale=<f>: the vector's strength (negative = keep the current one)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -5089,6 +5090,7 @@ int main(int argc, char** argv) {
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "cvecscale") req_cvec_scale = std::clamp((double) fv, 0.0, 4.0);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -5243,6 +5245,16 @@ int main(int argc, char** argv) {
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
             const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            // cvecscale: the vector's strength is global, not per-request; when it changes, drop the whole
+            // conversation cache (parked, live and checkpoints were computed at the previous strength).
+            if (strata::kernels::cvec().loaded() && req_cvec_scale >= 0.0 &&
+                (float) req_cvec_scale != strata::kernels::cvec_scale()) {
+                strata::kernels::cvec_set_scale((float) req_cvec_scale);
+                conversations.clear();
+                live_ok = false;
+                checks.clear();
+                std::fprintf(stderr, "strata serve: control vector strength = %.3f (cache dropped)\n", req_cvec_scale);
+            }
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)

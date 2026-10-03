@@ -104,6 +104,9 @@ public:
 
     ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
+    // Drop every parked conversation and any retained K/V (e.g. the control-vector strength changed, so the parked
+    // states were computed at a strength this request no longer uses).
+    void clear() { entries_.clear(); reuse_ = {}; bytes_ = 0; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }

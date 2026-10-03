@@ -25,7 +25,7 @@ namespace strata::kernels {
 struct Cvec {
     const float* dir = nullptr;   ///< device, n_layers * n_embd: project = the unit v_l, add = d_l; zero rows elsewhere
     const float* s = nullptr;     ///< device, n_layers: project = s_l, add = 1; 0 = the layer is not steered
-    const int* on = nullptr;      ///< device int: 0 = this request runs the stock model
+    const float* scale = nullptr; ///< device float: the per-request strength multiplier; 0 = this request runs the stock model
     int mode = 0;                 ///< 0 = project, 1 = add
     int first = 0, last = -1;     ///< the steered layers, inclusive
     int64_t n_embd = 0, hc = 0;
@@ -48,9 +48,15 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
 bool cvec_replicate(std::string& err);
 
 /// The per-request switch, on every device that holds the vector.  Synchronizes them when it changes, so call it
-/// between requests.
+/// between requests.  "On" applies the loaded vector at the current strength (cvec_scale).
 void cvec_set_enabled(bool on);
 bool cvec_enabled();
+
+/// The strength multiplier the vector is applied at while on (1.0 = the loaded scale, 0 = off).  Global, not
+/// per-layer; pushed to every device holding the vector.  The caller drops the conversation cache when it changes,
+/// since the parked K/V were computed at the previous strength.  Call between requests.
+void cvec_set_scale(float scale);
+float cvec_scale();
 
 /// Layer `layer`'s vector on T tokens' residual stacks (`R + t * r_ld`, hc streams of n_embd).  With `write`, the
 /// pending FFN write `R += bo * 2 sigmoid(inj / hc)` (the fused read's arithmetic) is applied first, for callers

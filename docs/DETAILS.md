@@ -860,6 +860,14 @@ config default goes in `"sampling": {"experimental_speed_projection": false}`). 
 cache once, since the model state was computed the other way. Switched off, the output is token-for-token the stock
 model's.
 
+**Strength (runtime).** The drawer also has a strength slider, and the API takes `"projection_scale": <0..4>` (the
+engine flag it sets is `cvecscale`): the vector is applied at that multiple of its loaded scale (`h -= s·scale·(h.v)·v`),
+so `1` is the loaded strength and `0` is the stock model (token-for-token). The strength is global, not per request;
+changing it drops the conversation cache once, exactly like the on/off switch, and the engine logs `control vector
+strength = <s> (cache dropped)`. Measured on the Q2_K OrcaUncensored fit (40 held-out harmful prompts, thinking off,
+pattern-matched refusals): refusals fall from 37/40 at scale 0 to 2/40 at 0.5 and 0/40 at 1.0, with 0/20 harmless
+prompts refused at every scale; decode within run-to-run noise of stock.
+
 **Measured here** (Q2_0, fixed experts, 2,557 teacher-forced tokens of code, a document and a chat): the top-1 token
 changes at 10% of positions, mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3% on
 the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
