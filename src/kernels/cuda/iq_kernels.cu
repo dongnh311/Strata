@@ -295,7 +295,7 @@ __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(const void* __restrict__ vb
 // Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down: llama.cpp's vec_dot_*_q8_1 (vecdotq.cuh, VDR 2 each), transcribed; the
 // Q5_1 min term is the one departure (below).  Via eddoursul/Strata 8029fa9 (iq_dot.cuh) and #255 (Q8_0,
 // gopinath87607), which agree with llama.cpp and with each other.
-constexpr int VDR_Q4_K = 2, VDR_Q5_K = 2, VDR_Q5_1 = 2, VDR_Q5_0 = 2, VDR_Q8_0 = 2;
+constexpr int VDR_Q4_K = 2, VDR_Q5_K = 2, VDR_Q5_1 = 2, VDR_Q5_0 = 2, VDR_Q4_1 = 2, VDR_Q8_0 = 2;
 
 __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(const int* __restrict__ v, const int* __restrict__ u,
                                                              const uint8_t* __restrict__ sc, const uint8_t* __restrict__ m,
@@ -462,6 +462,26 @@ __device__ __forceinline__ float vec_dot_q5_1_q8_1(const void* __restrict__ vbq,
     const float d8 = __low2float(bq8_1->ds);
     return sumi * (dm5.x * d8) + sumu * (dm5.y * d8);
 }
+// Q4_1 (a ds4 Q4_K down repacked without padding, tools/unpad_down.py --down q4_1): vec_dot_q5_1_q8_1 above with the
+// fifth bits absent - the same dp4a chain in the same order and the same float expression, so a Q4_1 block and the
+// Q5_1 block holding the same d, m and 4-bit codes (fifth bits zero) give bitwise equal results
+// (native_expert_parity --q4_1-pair checks it).
+__device__ __forceinline__ float vec_dot_q4_1_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                   const int& kbx, const int& iqs) {
+    const block_q4_1* bq4_1 = (const block_q4_1*) vbq + kbx;
+    int sumi = 0, sumu = 0;
+#pragma unroll
+    for (int i = 0; i < VDR_Q4_1; ++i) {
+        const int vl = get_int_b4(bq4_1->qs, iqs + i);
+        const int u0 = get_int_b4(bq8_1->qs, iqs + i), u1 = get_int_b4(bq8_1->qs, iqs + i + QI4_1);
+        sumi = ggml_cuda_dp4a((vl >> 0) & 0x0F0F0F0F, u0, sumi);
+        sumi = ggml_cuda_dp4a((vl >> 4) & 0x0F0F0F0F, u1, sumi);
+        sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
+    }
+    const float2 dm4 = __half22float2(bq4_1->dm);
+    const float d8 = __low2float(bq8_1->ds);
+    return sumi * (dm4.x * d8) + sumu * (dm4.y * d8);
+}
 __device__ __forceinline__ float vec_dot_q8_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                    const int& kbx, const int& iqs) {
     const block_q8_0* bq8_0 = (const block_q8_0*) vbq + kbx;
@@ -471,6 +491,39 @@ __device__ __forceinline__ float vec_dot_q8_0_q8_1(const void* __restrict__ vbq,
         sumi = ggml_cuda_dp4a(get_int_b2(bq8_0->qs, iqs + i), get_int_b4(bq8_1->qs, iqs + i), sumi);
     const float d8_0 = __half2float(bq8_0->d), d8_1 = __low2float(bq8_1->ds);
     return d8_0 * d8_1 * ((float) sumi);
+}
+
+// Q2_K: llama.cpp's vec_dot_q2_K_q8_1 (vecdotq.cuh, VDR 1; its min term already multiplies the sum of the QUANTIZED
+// activations), taking the block's fields instead of the block so that the half block of a trimmed row (a ds4
+// Q2KDownPad768 down row without its padding, tools/unpad_down.py --down q2_k: scales[0:8], qs[0:32], d/dmin at +40)
+// runs the same arithmetic.  The same operations in the same order as llama.cpp's (it fills u[] and d8[] first).
+constexpr int VDR_Q2_K = 1;
+constexpr int Q2K_HALF_BYTES = 44;   // the trimmed half block
+__device__ __forceinline__ float q2k_dot(const uint8_t* __restrict__ scales, const uint8_t* __restrict__ qs,
+                                         const half2& dm2, const block_q8_1* __restrict__ bq8_1, int iqs) {
+    const int bq8_offset = QR2_K * (iqs / QI8_1);
+    const int scale_offset = iqs - iqs % QI8_1 + (iqs % QI8_1) / (QI8_1 / 2);
+    const int v = get_int_b4(qs, iqs);
+    float sumf_d = 0.0f, sumf_m = 0.0f;
+#pragma unroll
+    for (int i = 0; i < QR2_K; ++i) {
+        const int u = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
+        const float d8 = __low2float(bq8_1[bq8_offset + i].ds);
+        const int sc = scales[scale_offset + 2 * i];
+        const int vi = (v >> (2 * i)) & 0x03030303;
+        sumf_d += d8 * (ggml_cuda_dp4a(vi, u, 0) * (sc & 0xF));
+        int m = sc >> 4;
+        m |= m << 8;
+        m |= m << 16;
+        sumf_m += d8 * ggml_cuda_dp4a(m, u, 0);   // the 4-bit min times the sum of the quantized activations
+    }
+    const float2 dm2f = __half22float2(dm2);
+    return dm2f.x * sumf_d - dm2f.y * sumf_m;
+}
+__device__ __forceinline__ float vec_dot_q2_K_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                   const int& kbx, const int& iqs) {
+    const block_q2_K* b = (const block_q2_K*) vbq + kbx;
+    return q2k_dot(b->scales, b->qs, b->dm, bq8_1, iqs);
 }
 
 // ---------------------------------------------------------------- the formats
@@ -504,11 +557,17 @@ template<> struct Fmt<6> { static constexpr int qk = 32, ipb = QI5_0 / VDR_Q5_0,
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q5_0_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0, step = VDR_Q8_0;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q8_0_q8_1(v, y, kbx, iqs); } };
+template<> struct Fmt<3> { static constexpr int qk = 32, ipb = QI4_1 / VDR_Q4_1, step = VDR_Q4_1;
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q4_1_q8_1(v, y, kbx, iqs); } };
+template<> struct Fmt<10> { static constexpr int qk = 256, ipb = QI2_K / VDR_Q2_K, step = VDR_Q2_K;
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_K_q8_1(v, y, kbx, iqs); } };
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
-// entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
+// entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.  Q4_1 (3) and
+// Q2_K (10) are down types only: no dense projection uses them, and every kernel costs VRAM at start-up
+// (CUDA_MODULE_LOADING=EAGER).
 #define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(8)
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(8)
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(3) X(10) X(8)
 #define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(8)
 
 __device__ __forceinline__ float warp_sum(float v) {
@@ -525,6 +584,22 @@ __device__ __forceinline__ float row_dot(const uint8_t* row, const block_q8_1* x
     for (int k = lane; k < nb * F::ipb; k += 32) {
         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
         s += F::dot(row, x + kbx * (F::qk / 32), kbx, iqs);
+    }
+    return warp_sum(s);
+}
+
+// A trimmed Q2_K row of n values (n % 256 == 128, see q2k_dot): the whole blocks as row_dot<10> takes them, then the
+// half block's calls, which are those of a whole block's first 128 values (iqs 0..7, q8_1 blocks 8*full .. +3).
+// The same calls k, lane-strided and summed the same way as row_dot.
+__device__ __forceinline__ float row_dot_q2k_trim(const uint8_t* row, const block_q8_1* x, int n, int lane) {
+    using F = Fmt<10>;
+    const int full = n / F::qk, calls = full * F::ipb + (n % F::qk) / 128 * (F::ipb / 2);
+    const uint8_t* half = row + (size_t) full * sizeof(block_q2_K);
+    float s = 0.0f;
+    for (int k = lane; k < calls; k += 32) {
+        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+        s += kbx < full ? F::dot(row, x + kbx * (F::qk / 32), kbx, iqs)
+                        : q2k_dot(half, half + 8, *(const half2*) (half + 40), x + kbx * (F::qk / 32), iqs);
     }
     return warp_sum(s);
 }
@@ -980,7 +1055,12 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
         const uint8_t* wr = (const uint8_t*) grp_ptr[g] + off;
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; ++e) {
-            const float s = row_dot<TD>(wr, hq + (size_t) e * hb, nb, lane);
+            float s;
+            if constexpr (TD == 10) {   // Q2_K rows may end in a half block (row_dot_q2k_trim; whole rows take the same path)
+                s = row_dot_q2k_trim(wr, hq + (size_t) e * hb, (int) L.n_ff, lane);
+            } else {
+                s = row_dot<TD>(wr, hq + (size_t) e * hb, nb, lane);
+            }
             if (lane == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = s;
         }
     }
@@ -1300,6 +1380,19 @@ __device__ void dq_q5_1(const void* vx, int64_t ibs, dst_t* yy, int tid) {
         y[iqs + 16] = cvt<dst_t>((float) ((x[ib].qs[iqs] >> 4) | xh_1) * dm.x + dm.y);
     }
 }
+// Q4_1: dq_q5_1 without the fifth bits (the same products and sums, so the same values for the same codes)
+template<typename dst_t>
+__device__ void dq_q4_1(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+    const block_q4_1* x = (const block_q4_1*) vx + ibs * (QK_K / QK4_1);
+    const int ib = tid % 8, il = tid / 8;
+    const float2 dm = __half22float2(x[ib].dm);
+    dst_t* y = yy + 32 * ib;
+    for (int j = 0; j < 4; ++j) {
+        const int iqs = 4 * il + j;
+        y[iqs] = cvt<dst_t>((float) (x[ib].qs[iqs] & 0xf) * dm.x + dm.y);
+        y[iqs + 16] = cvt<dst_t>((float) (x[ib].qs[iqs] >> 4) * dm.x + dm.y);
+    }
+}
 template<typename dst_t>
 __device__ void dq_q8_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     const block_q8_0* x = (const block_q8_0*) vx + ibs * (QK_K / QK8_0);
@@ -1307,6 +1400,27 @@ __device__ void dq_q8_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     const float d = __half2float(x[ib].d);
     dst_t* y = yy + 32 * ib + 8 * il;
     for (int j = 0; j < 8; ++j) y[j] = cvt<dst_t>((float) x[ib].qs[8 * il + j] * d);
+}
+
+// Q2_K: ggml's dequantize_row_q2_K, half h (128 values) of a block from its fields, lane l (0..15) writes the 8
+// values l, l + 16 of each 32 (dl * q - ml with dl = d * (sc & 0xF), ml = dmin * (sc >> 4)).
+template<typename dst_t>
+__device__ __forceinline__ void dq_q2_k_half(const uint8_t* scales, const uint8_t* qs, const half2 dm, dst_t* y, int h, int l) {
+    const float d = __low2float(dm), mn = __high2float(dm);
+    const uint8_t* q = qs + 32 * h;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int is = 8 * h + 2 * j;
+        const float dl0 = d * (scales[is] & 0xF), ml0 = mn * (scales[is] >> 4);
+        const float dl1 = d * (scales[is + 1] & 0xF), ml1 = mn * (scales[is + 1] >> 4);
+        y[128 * h + 32 * j + l] = cvt<dst_t>(dl0 * ((q[l] >> (2 * j)) & 3) - ml0);
+        y[128 * h + 32 * j + 16 + l] = cvt<dst_t>(dl1 * ((q[l + 16] >> (2 * j)) & 3) - ml1);
+    }
+}
+template<typename dst_t>
+__device__ void dq_q2_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+    const block_q2_K* x = (const block_q2_K*) vx + ibs;
+    dq_q2_k_half(x->scales, x->qs, x->dm, yy, tid / 16, tid % 16);
 }
 
 // BF16 (the token embedding as the checkpoint ships it, tools/embd_bf16_pack.py): 8 values per thread.
@@ -1335,9 +1449,26 @@ __device__ __forceinline__ void dq_dispatch(int ty, const void* vx, int64_t ibs,
         case 13: dq_q5_k(vx, ibs, y, tid); break;
         case 7: dq_q5_1(vx, ibs, y, tid); break;
         case 6: dq_q5_0(vx, ibs, y, tid); break;
+        case 3: dq_q4_1(vx, ibs, y, tid); break;
+        case 10: dq_q2_k(vx, ibs, y, tid); break;
         case 8: dq_q8_0(vx, ibs, y, tid); break;
         case 30: dq_bf16(vx, ibs, y, tid); break;
         default: break;
+    }
+}
+
+// rows of n values whose last block may be a trimmed Q2_K half block: block (blockIdx.x of a row, row blockIdx.y)
+__global__ void dequant_q2k_rows_kernel(const uint8_t* __restrict__ w, int64_t n, size_t row_bytes, __half* __restrict__ y) {
+    const int64_t r = blockIdx.y;
+    const int b = (int) blockIdx.x, full = (int) (n / QK_K);
+    const uint8_t* row = w + (size_t) r * row_bytes;
+    __half* yb = y + r * n + (int64_t) b * QK_K;
+    if (b < full) {
+        const block_q2_K* x = (const block_q2_K*) row + b;
+        dq_q2_k_half(x->scales, x->qs, x->dm, yb, threadIdx.x / 16, threadIdx.x % 16);
+    } else if (threadIdx.x < 16) {
+        const uint8_t* half = row + (size_t) full * sizeof(block_q2_K);
+        dq_q2_k_half(half, half + 8, *(const half2*) (half + 40), yb, 0, threadIdx.x);
     }
 }
 
@@ -1359,7 +1490,7 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
 // the types dq_dispatch dequantizes
 bool is_iq(int t) {
     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
-           t == 12 || t == 13 || t == 7 || t == 6 || t == 8;
+           t == 12 || t == 13 || t == 7 || t == 6 || t == 3 || t == 10 || t == 8;
 }
 // values per block of the types the grouped expert kernels take (0 = none)
 int gu_qk(int t) {
@@ -1440,6 +1571,10 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 13: return (size_t) (n / 256) * sizeof(block_q5_K);
         case 7: return (size_t) (n / 32) * sizeof(block_q5_1);
         case 6: return (size_t) (n / 32) * sizeof(block_q5_0);
+        case 3: return (size_t) (n / 32) * sizeof(block_q4_1);
+        case 10:   // whole blocks, then a trimmed half block (row_dot_q2k_trim)
+            if (n % 128) return 0;
+            return (size_t) (n / 256) * sizeof(block_q2_K) + (n % 256 ? (size_t) Q2K_HALF_BYTES : 0);
         case 8: return (size_t) (n / 32) * sizeof(block_q8_0);
         case 30: return (size_t) n * 2;   // BF16: the token embedding only (iq_embed_rows, iq_dequant_f32)
         default: return 0;
@@ -1508,9 +1643,19 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
 }
 
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
-    const int qg = gu_qk(gu_type), qd = d_qk(d_type);
+    const int qg = gu_qk(gu_type), qd = d_type == 10 ? 128 : d_qk(d_type);   // Q2_K down: half blocks (row_dot_q2k_trim)
     return qg > 0 && qd > 0 && is_iq(gu_type) && is_iq(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&
            n_embd % 256 == 0 && (n_ff * n_embd) % 256 == 0;
+}
+
+void iq_dequant_rows_f16(int t, const void* src, int64_t rows, int64_t n, uint16_t* dst, void* stream) {
+    if (t == 10 && n % 256 == 128) {   // trimmed Q2_K rows
+        dequant_q2k_rows_kernel<<<dim3((unsigned) ((n + 255) / 256), (unsigned) rows), 32, 0, (cudaStream_t) stream>>>(
+            (const uint8_t*) src, n, iq_row_bytes(t, n), (__half*) dst);
+        check("iq_dequant_rows_f16");
+        return;
+    }
+    iq_dequant_f16(t, src, rows * n, dst, stream);   // whole blocks: rows are contiguous blocks
 }
 
 NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) {

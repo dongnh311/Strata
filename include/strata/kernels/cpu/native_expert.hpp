@@ -27,7 +27,15 @@ struct NativeFmt {
     size_t up_off = 0, down_off = 0;    ///< inside the blob
     size_t bytes = 0;                   ///< the whole blob
     size_t act_bytes = 0, h_bytes = 0;  ///< quantized activation sizes (n_embd of gu_act, n_ff of d_act)
+    /// Q2_K down rows that end inside a block (a ds4 Q2KDownPad768 file's rows with the padding cut off,
+    /// tools/unpad_down.py --down q2_k): the values of the short last block (128 of 640), else 0.  Such a row is the
+    /// whole blocks, then scales[0:8], qs[0:32] and d/dmin of the half block (44 bytes); h is quantized as Q8_K over
+    /// n_ff rounded up to 256 with zeros after n_ff.
+    int d_tail = 0;
 };
+
+/// Bytes of one Q2_K row of `n` values (whole blocks, then a 44-byte half block); 0 if `n` is not a multiple of 128.
+size_t q2k_trim_row_bytes(int64_t n) noexcept;
 
 /// Whether this build has the ggml-cpu path.
 bool native_experts_available() noexcept;

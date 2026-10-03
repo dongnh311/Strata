@@ -40,11 +40,11 @@ int main(int argc, char** argv) {
                     ++unknown;
                     continue;
                 }
-                if (t->elements() % (uint64_t)el) {
+                const uint64_t nb = strata::tensor_payload_bytes(*t);   // whole blocks, or trimmed rows
+                if (nb == 0) {
                     ++bad;
                     continue;
                 }
-                const uint64_t nb = t->elements() / (uint64_t)el * (uint64_t)by;
                 // The bracket is on the GAP to the next tensor's offset, not on that offset itself -
                 // offsets are relative to data_start, so the gap is a difference. Comparing against
                 // the raw offset flagged almost every tensor (213/214) while the same test in Python
