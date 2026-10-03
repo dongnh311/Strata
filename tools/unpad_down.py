@@ -109,13 +109,81 @@ def q4k_to_q4_1(raw, keep_values: int = LOGICAL_IN) -> np.ndarray:
     return np.concatenate([b[:, 0:4], b[:, 8:24]], axis=1).reshape(*lead, -1)
 
 
+# --- the Q2K file's own rows, trimmed.  A Q2_K block is scales[16] (4-bit scale | 4-bit min per 16 values), qs[64]
+# (2-bit codes; qs[0:32] hold values 0..127, qs[32:64] values 128..255), fp16 d, fp16 dmin = 84 bytes per 256 values.
+# A down row of 640 values is 2 whole blocks and the first half of a third: the third keeps scales[0:8], qs[0:32] and
+# d/dmin (44 bytes, in that order), so the row is 212 bytes instead of the padded 252 and every kept byte is the
+# source's.  The same idea as ds4's trimmed Q4_K rows (ds4.c q4k_row_bytes), with Q2_K's field order.
+Q2K_BYTES, Q2K_HALF = 84, 44
+
+
+def kquant_row_bytes(qt, n: int) -> int:
+    """Bytes of one row of `n` values: whole blocks, then a short block (Q2_K: 128 values) when the row ends inside one."""
+    if qt != Q.Q2_K:
+        raise ValueError(f"no trimmed row rule for {getattr(qt, 'name', qt)}")
+    if n <= 0 or n % 128:
+        raise ValueError(f"a Q2_K row of {n} values is not a whole number of 128-value halves")
+    return n // 256 * Q2K_BYTES + (Q2K_HALF if n % 256 else 0)
+
+
+def q2k_trim(raw, keep_values: int = LOGICAL_IN) -> np.ndarray:
+    """Padded Q2_K rows (uint8, last axis = whole 84-byte blocks) -> trimmed rows of the first `keep_values` values."""
+    raw = np.asarray(raw)
+    if raw.dtype != np.uint8:
+        raise ValueError(f"expected raw bytes (uint8), got {raw.dtype}")
+    if raw.shape[-1] % Q2K_BYTES:
+        raise ValueError(f"a row of {raw.shape[-1]} bytes is not whole Q2_K blocks ({Q2K_BYTES} bytes)")
+    row = kquant_row_bytes(Q.Q2_K, keep_values)
+    if keep_values > raw.shape[-1] // Q2K_BYTES * 256:
+        raise ValueError(f"{keep_values} values asked of rows that hold {raw.shape[-1] // Q2K_BYTES * 256}")
+    full = keep_values // 256 * Q2K_BYTES
+    if row == full:
+        return np.ascontiguousarray(raw[..., :full])
+    last = raw[..., full:full + Q2K_BYTES]
+    return np.concatenate([raw[..., :full], last[..., 0:8], last[..., 16:48], last[..., 80:84]], axis=-1)
+
+
+def q2k_untrim(rows, n: int = LOGICAL_IN) -> np.ndarray:
+    """Trimmed rows -> whole Q2_K blocks for gguf-py's dequantizer: the short block's missing half gets zero scales, mins
+    and codes, so it decodes to zeros (a check only; the engine reads the trimmed rows as they are)."""
+    rows = np.asarray(rows)
+    row = kquant_row_bytes(Q.Q2_K, n)
+    if rows.shape[-1] != row:
+        raise ValueError(f"rows of {rows.shape[-1]} bytes, expected {row} for {n} values")
+    full = n // 256 * Q2K_BYTES
+    if row == full:
+        return rows
+    tail = rows[..., full:]
+    block = np.zeros(rows.shape[:-1] + (Q2K_BYTES,), np.uint8)
+    block[..., 0:8], block[..., 16:48], block[..., 80:84] = tail[..., 0:8], tail[..., 8:40], tail[..., 40:44]
+    return np.concatenate([rows[..., :full], block], axis=-1)
+
+
+def q2k_check(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int = LOGICAL_IN) -> tuple[float, float]:
+    """(0.0 if every kept value equals the source's bit for bit, else inf; largest |value| in the dropped columns)."""
+    a = quants.dequantize(np.ascontiguousarray(src_rows), Q.Q2_K)
+    b = quants.dequantize(q2k_untrim(out_rows, keep_values), Q.Q2_K)[..., :keep_values]
+    same = np.array_equal(a[..., :keep_values].view(np.uint32), b.view(np.uint32))
+    return (0.0 if same else float("inf")), float(np.abs(a[..., keep_values:]).max()) if a.shape[-1] > keep_values else 0.0
+
+
 # --- smaller down types.  q5_1 above is a repack (no loss beyond fp16).  The two below re-quantize the dequantized values:
 # q4_0 (4.5 bits per weight) and q2_0 (2.25: Strata's own 64-value blocks, grid {-1,0,1,2} x d, fp16 d, as tools/mtp_pack.py
 # writes them for the MTP head and as the base model's experts are stored).  They exist because the expert arena of the
 # q5_1 file (47.5 GiB) does not fit this PC's RAM beside a 512K context.
 CODECS = {"q5_1": (Q.Q5_1, Q51_VALUES, Q51_BYTES), "q4_1": (Q.Q4_1, 32, Q41_BYTES), "q4_0": (Q.Q4_0, 32, 18),
-          "q2_0": (Q.Q2_0, 64, 18)}
+          "q2_0": (Q.Q2_0, 64, 18), "q2_k": (Q.Q2_K, 128, None)}   # q2_k: row bytes by kquant_row_bytes
 LOSSLESS = {"q5_1": (q4k_to_q5_1, Q.Q5_1), "q4_1": (q4k_to_q4_1, Q.Q4_1)}   # repacks of a Q4_K source: no re-quantization
+EXACT = {"q5_1": "q4_k", "q4_1": "q4_k", "q2_k": "q2_k"}   # the codecs that keep the source's weights, and their source type
+
+
+def down_row_bytes(codec: str, keep_values: int) -> int:
+    _, per_block, block_bytes = CODECS[codec]
+    if codec == "q2_k":
+        return kquant_row_bytes(Q.Q2_K, keep_values)
+    if keep_values <= 0 or keep_values % per_block:
+        raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {codec} blocks")
+    return keep_values // per_block * block_bytes
 
 
 def encode_q2_0(w: np.ndarray) -> np.ndarray:
@@ -163,6 +231,10 @@ def q4k_to_codec(raw, keep_values: int = LOGICAL_IN, codec: str = "q5_1", src_ty
         raise ValueError(f"unknown down codec {codec!r} (choose from {sorted(CODECS)})")
     if src_type not in SOURCES:
         raise ValueError(f"unknown source type {src_type!r} (choose from {sorted(SOURCES)})")
+    if codec == "q2_k":
+        if src_type != "q2_k":
+            raise ValueError("q2_k keeps a Q2_K file's own rows: the source must be Q2_K")
+        return q2k_trim(raw, keep_values)
     if codec in LOSSLESS:
         if src_type != "q4_k":
             raise ValueError(f"the lossless {codec} repack exists for a Q4_K source only")
@@ -260,10 +332,8 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     src, dst = pathlib.Path(src), pathlib.Path(dst)
     if down not in CODECS:
         raise ValueError(f"unknown down codec {down!r} (choose from {sorted(CODECS)})")
-    down_qt, per_block, block_bytes = CODECS[down]
-    if keep_values <= 0 or keep_values % per_block:
-        raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {down} blocks")
-    row_out = keep_values // per_block * block_bytes
+    down_qt = CODECS[down][0]
+    row_out = down_row_bytes(down, keep_values)
     if dst.exists():
         raise FileExistsError(f"{dst} exists; refusing to overwrite it")
     reader = gguf.GGUFReader(str(src), "r")
@@ -299,8 +369,9 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
             plan.append((t, "copy"))
     if n_down == 0:
         raise ValueError("no routed down tensors found")
-    if down in LOSSLESS and src_type != "q4_k":
-        raise ValueError(f"the lossless {down} repack exists for a Q4_K source only; use --down q4_0 or q2_0 for a Q2_K file")
+    if down in EXACT and src_type != EXACT[down]:
+        raise ValueError(f"--down {down} keeps the weights of a {EXACT[down].upper()} source only, this file's down "
+                         f"experts are {src_type.upper()}; use --down q4_0 or q2_0 to re-quantize")
 
     writer = gguf.GGUFWriter(str(dst), "qwen4exp")
     for field in reader.fields.values():
@@ -329,7 +400,12 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
         if action == "down":
             shp = list(t.data.shape)                      # (experts, rows, 3 blocks of 144 bytes)
             nbytes = shp[0] * shp[1] * row_out
-            writer.add_tensor_info(t.name, (shp[0], shp[1], row_out), np.dtype(np.uint8), nbytes, down_qt)
+            if down == "q2_k":
+                # gguf-py derives the element shape from whole blocks (212 bytes -> 512 values, quants.py); give it the
+                # element shape instead (a non-uint8 dtype skips that derivation) and the true byte count
+                writer.add_tensor_info(t.name, (shp[0], shp[1], keep_values), np.dtype(np.int8), nbytes, down_qt)
+            else:
+                writer.add_tensor_info(t.name, (shp[0], shp[1], row_out), np.dtype(np.uint8), nbytes, down_qt)
         else:
             writer.add_tensor_info(t.name, t.data.shape, t.data.dtype, t.data.nbytes, t.tensor_type)
 
@@ -340,7 +416,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     worst, worst_rms, tail_max, done, pending = 0.0, 0.0, 0.0, 0, 0
     rng = np.random.default_rng(0)
     t0 = time.time()
-    pool = make_pool(workers) if workers > 1 and down not in LOSSLESS else None
+    pool = make_pool(workers) if workers > 1 and down not in EXACT else None
     try:
         for t, action in plan:
             if action == "drop":
@@ -361,8 +437,11 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                     out[e0:e0 + CHUNK_EXPERTS] = q4k_to_codec(t.data[e0:e0 + CHUNK_EXPERTS], keep_values, down, src_type)
             pick = np.unique(np.concatenate([[0, experts - 1], rng.integers(0, experts, size=max(0, samples - 2))])) if samples else []
             for e in pick:
-                if down in LOSSLESS:
-                    err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values, down)
+                if down in EXACT:
+                    if down == "q2_k":
+                        err, tail = q2k_check(np.asarray(t.data[e]), out[e], keep_values)
+                    else:
+                        err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values, down)
                     worst, tail_max = max(worst, err), max(tail_max, tail)
                     if err > TOL:
                         writer.close()
@@ -377,7 +456,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                 pending = 0
             done += 1
             if progress:
-                progress(done, n_down, t.name, time.time() - t0, worst if down in LOSSLESS else worst_rms)
+                progress(done, n_down, t.name, time.time() - t0, worst if down in EXACT else worst_rms)
         _sync(writer)
         writer.close()
     finally:
@@ -401,18 +480,18 @@ def main(argv=None) -> int:
                     help="write split.no 0 / split.count COUNT / split.tensors.count TENSORS (the file becomes shard 1 of "
                          "COUNT beside the PLE table's GGUF: 2 1224 for the PLE shard of the GSQ-RCO Q2_0 model)")
     ap.add_argument("--down", choices=sorted(CODECS), default="q5_1",
-                    help="type of the rewritten down experts: q5_1 = lossless repack (default), q4_1 = the same weights in 5 bits instead of 6, q4_0 / q2_0 = re-quantized, smaller")
+                    help="type of the rewritten down experts: q5_1 = lossless repack (default), q4_1 = the same weights in 5 bits instead of 6, q2_k = a Q2K file's own rows without the padding (byte for byte), q4_0 / q2_0 = re-quantized, smaller")
     ap.add_argument("--workers", type=int, default=1, help="worker processes for q4_0 / q2_0 (default 1)")
     a = ap.parse_args(argv)
 
     def progress(done, total, name, secs, worst):
-        what = "worst block error" if a.down in LOSSLESS else "worst relative RMS error"
+        what = "worst block error" if a.down in EXACT else "worst relative RMS error"
         print(f"  [{done:2d}/{total}] {name}  {secs:6.0f}s  {what} so far {worst:.2e}", flush=True)
 
     m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress, sync_bytes=a.sync_mib << 20,
                 split=tuple(a.split) if a.split else None, down=a.down, workers=a.workers)
     a.dst.with_suffix(a.dst.suffix + ".json").write_text(json.dumps(m, indent=1), encoding="utf-8")
-    err = (f"worst sampled block error {m['max_block_error']:.2e} (limit {m['tolerance']:.2e})" if m["down"] in LOSSLESS
+    err = (f"worst sampled block error {m['max_block_error']:.2e} (limit {m['tolerance']:.2e})" if m["down"] in EXACT
            else f"worst sampled relative RMS error {m['max_rms_error']:.3f}")
     print(f"done: {m['down_tensors_converted']} down tensors rewritten as {m['down']}, {len(m['dropped_tensors'])} MTP tensors dropped, "
           f"blocks {m['blocks_in']} -> {m['blocks_out']}, {err}, largest value in the dropped columns {m['dropped_tail_max_abs']:.3g}")

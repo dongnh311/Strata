@@ -225,6 +225,83 @@ class FromQ2K(unittest.TestCase):
             U.q4k_to_codec(self.src, 640, "q2_0", src_type="q3_k")
 
 
+class TrimQ2K(unittest.TestCase):
+    """--down q2_k: the Q2K file's own down rows with the padding cut off, byte for byte (no re-quantization).  A row of
+    640 values keeps its 2 whole Q2_K blocks and, of the third, the 8 scale bytes, the 32 code bytes and d/dmin of its first
+    128 values: 168 + 44 = 212 bytes instead of 252."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(11)
+        self.src = make_q2k(self.rng, rows=24)
+
+    def test_row_bytes(self):
+        self.assertEqual(U.kquant_row_bytes(Q.Q2_K, 640), 212)
+        self.assertEqual(U.kquant_row_bytes(Q.Q2_K, 512), 168)
+        self.assertEqual(U.kquant_row_bytes(Q.Q2_K, 768), 252)
+        for bad in (576, 600, 0):
+            with self.assertRaises(ValueError):
+                U.kquant_row_bytes(Q.Q2_K, bad)
+
+    def test_the_kept_values_are_bitwise_the_source_values(self):
+        out = U.q2k_trim(self.src, 640)
+        self.assertEqual(out.shape, (24, 212))
+        a = quants.dequantize(self.src, Q.Q2_K).reshape(24, 768)[:, :640]
+        b = quants.dequantize(U.q2k_untrim(out, 640), Q.Q2_K).reshape(24, 768)
+        self.assertTrue(np.array_equal(a.view(np.uint32), b[:, :640].view(np.uint32)))
+        self.assertFalse(b[:, 640:].any())                      # the dropped half comes back as zero scales and codes
+
+    def test_layout(self):
+        out = U.q2k_trim(self.src, 640)
+        last = self.src[:, 168:252]
+        self.assertTrue(np.array_equal(out[:, :168], self.src[:, :168]))            # two whole blocks, untouched
+        self.assertTrue(np.array_equal(out[:, 168:176], last[:, 0:8]))              # scales of sub-blocks 0..7
+        self.assertTrue(np.array_equal(out[:, 176:208], last[:, 16:48]))            # qs of values 0..127
+        self.assertTrue(np.array_equal(out[:, 208:212], last[:, 80:84]))            # d, dmin
+
+    def test_the_equality_check_can_fail(self):
+        out = U.q2k_trim(self.src, 640)
+        out[3, 190] ^= 0x0C                                       # one 2-bit code of the short block
+        a = quants.dequantize(self.src, Q.Q2_K).reshape(24, 768)[:, :640]
+        b = quants.dequantize(U.q2k_untrim(out, 640), Q.Q2_K).reshape(24, 768)[:, :640]
+        self.assertFalse(np.array_equal(a, b))
+
+    def test_whole_blocks_need_no_short_block(self):
+        out = U.q2k_trim(self.src, 512)
+        self.assertTrue(np.array_equal(out, self.src[:, :168]))
+
+    def test_bad_arguments_are_refused(self):
+        with self.assertRaises(ValueError):
+            U.q2k_trim(self.src, 576)                             # not a whole half block
+        with self.assertRaises(ValueError):
+            U.q2k_trim(self.src[:, :250], 640)                    # not whole Q2_K blocks
+        with self.assertRaises(ValueError):
+            U.q2k_trim(self.src, 1024)                            # more values than the row holds
+        with self.assertRaises(ValueError):
+            U.q4k_to_codec(make_q4k(self.rng, rows=2), 640, "q2_k", src_type="q4_k")   # Q2_K rows come from a Q2_K file
+
+
+class ReaderRowRule(unittest.TestCase):
+    """tools/gguf_reader.py sizes every tensor for iq_pack.py; gguf-py refuses a trimmed file outright."""
+
+    def test_trimmed_rows(self):
+        import gguf_reader as G
+        t = G.TensorInfo("d", [640, 2560, 512], 10, "Q2_K", 0)
+        self.assertEqual(t.expected_bytes(), 212 * 2560 * 512)       # not 210 per row (the whole-tensor division)
+        self.assertEqual(G.TensorInfo("d", [640, 2560, 512], 12, "Q4_K", 0).expected_bytes(), 368 * 2560 * 512)  # ds4
+        self.assertEqual(G.TensorInfo("d", [768, 4, 2], 10, "Q2_K", 0).expected_bytes(), 252 * 8)
+        self.assertIsNone(G.TensorInfo("d", [576, 4], 10, "Q2_K", 0).expected_bytes())
+        self.assertIsNone(G.TensorInfo("d", [640, 4], 13, "Q5_K", 0).expected_bytes())   # no row rule: refused, not guessed
+        self.assertEqual(G.TensorInfo("g", [2560, 640, 512], 16, "IQ2_XXS", 0).expected_bytes(), 660 * 640 * 512)
+
+
+def read_raw(path):
+    """{name: (tensor info, bytes)} of a GGUF through tools/gguf_reader.py (gguf-py cannot open trimmed rows)."""
+    import gguf_reader as G
+    f = G.GGUFFile(path)
+    return {t.name: (t, np.fromfile(str(path), dtype=np.uint8, count=t.expected_bytes(), offset=f.data_start + t.offset))
+            for t in f.tensors}
+
+
 def write_fixture(path, *, block_count=3, nextn=1, down_type=Q.Q4_K):
     """A tiny GGUF shaped like the real file: layers 0-1 + an embedded MTP layer 2, ds4 keys, a tokenizer."""
     rng = np.random.default_rng(99)
@@ -423,6 +500,28 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaises(ValueError):                       # the lossless repack exists for Q4_K only ...
             U.convert(other, self.dir / "x.gguf", down="q5_1")
         self.assertFalse((self.dir / "x.gguf").exists())          # ... and it is refused BEFORE an output file is created
+
+    def test_q2_k_trimmed_file(self):
+        other = self.dir / "q2k.gguf"
+        src = write_fixture(other, down_type=Q.Q2_K)
+        dst = self.dir / "q2k_trim.gguf"
+        m = U.convert(other, dst, down="q2_k", samples=2)
+        self.assertEqual((m["down"], m["source_down_type"]), ("q2_k", "q2_k"))
+        self.assertEqual(m["max_block_error"], 0.0)                # the kept values are the source's, exactly
+        self.assertEqual(m["max_rms_error"], 0.0)
+        seen = 0
+        for name, (t, got) in read_raw(dst).items():
+            arr, qt = src[name]
+            if name.endswith("ffn_down_exps.weight"):
+                self.assertEqual((t.type_name, t.shape), ("Q2_K", [640, 4, 2]), name)
+                self.assertTrue(np.array_equal(got.reshape(2, 4, 212), U.q2k_trim(arr, 640)), name)
+                seen += 1
+            else:                                                 # offsets after a trimmed tensor still land right
+                self.assertTrue(np.array_equal(got, np.asarray(arr).reshape(-1).view(np.uint8)), name)
+        self.assertEqual(seen, 2)
+        with self.assertRaises(ValueError):                       # a Q4_K file has no Q2_K rows to keep
+            U.convert(self.src, self.dir / "z.gguf", down="q2_k")
+        self.assertFalse((self.dir / "z.gguf").exists())
 
     def test_the_output_is_not_overwritten(self):
         self.dst.write_bytes(b"x")

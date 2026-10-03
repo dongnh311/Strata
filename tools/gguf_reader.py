@@ -68,9 +68,26 @@ class TensorInfo:
         if geom is None:
             return None
         block_elems, block_bytes = geom
+        if self.shape and self.shape[0] % block_elems:
+            # a K-quant row that ends inside a block (trimmed rows: tools/unpad_down.py --down q2_k, ds4's Q4KDownTrim)
+            row = trimmed_row_bytes(self.type_name, self.shape[0])
+            return None if row is None else row * (self.elements // self.shape[0])
         if self.elements % block_elems:
             return None
         return self.elements // block_elems * block_bytes
+
+
+def trimmed_row_bytes(type_name: str, n: int) -> int | None:
+    """Bytes of a row of `n` values that ends inside a 256-value block, or None.  Q2_K (tools/unpad_down.py q2k_trim):
+    whole blocks, then scales[0:8], qs[0:32], d, dmin of a 128-value half (44 bytes).  Q4_K (ds4.c q4k_row_bytes):
+    whole blocks, then the 16-byte header and the codes of the remaining values."""
+    if n <= 0:
+        return None
+    if type_name == "Q2_K" and n % 128 == 0:
+        return n // 256 * 84 + (44 if n % 256 else 0)
+    if type_name == "Q4_K" and n % 64 == 0:
+        return n // 256 * 144 + ((16 + n % 256 // 2) if n % 256 else 0)
+    return None
 
 
 class GGUFFile:
