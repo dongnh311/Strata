@@ -95,6 +95,44 @@ class Repack(unittest.TestCase):
             U.q4k_to_q5_1(self.src[:, :431], 640)  # not whole Q4_K blocks
 
 
+class RepackQ4_1(unittest.TestCase):
+    """q4_1: the same repack as q5_1 without the always-zero fifth bits (5 bits per weight instead of 6).  The claim is
+    that it stores the SAME weights as the q5_1 file: every value gguf-py decodes must be bitwise equal."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(4321)
+        self.src = make_q4k(self.rng, rows=24)
+
+    def test_values_are_bitwise_those_of_the_q5_1_repack(self):
+        a = quants.dequantize(U.q4k_to_q5_1(self.src, 640), Q.Q5_1)
+        b = quants.dequantize(U.q4k_to_codec(self.src, 640, "q4_1"), Q.Q4_1)
+        self.assertEqual(a.shape, b.shape)
+        self.assertTrue(np.array_equal(a.view(np.uint32), b.view(np.uint32)))
+
+    def test_the_equality_check_can_fail(self):
+        out = U.q4k_to_codec(self.src, 640, "q4_1").copy()
+        out[:, 4] ^= 0x10        # one high nibble of the first block's quants
+        a = quants.dequantize(U.q4k_to_q5_1(self.src, 640), Q.Q5_1)
+        b = quants.dequantize(out, Q.Q4_1)
+        self.assertFalse(np.array_equal(a.view(np.uint32), b.view(np.uint32)))
+
+    def test_values_survive_against_the_q4_k_source(self):
+        a = quants.dequantize(self.src, Q.Q4_K).reshape(24, 768)[:, :640]
+        b = quants.dequantize(U.q4k_to_codec(self.src, 640, "q4_1"), Q.Q4_1).reshape(24, 640)
+        rel, absolute = blockwise_error(a, b)
+        self.assertLessEqual(rel, TOL)
+        self.assertEqual(absolute, 0.0)
+
+    def test_row_is_20_q4_1_blocks(self):
+        out = U.q4k_to_codec(self.src.reshape(2, 12, 432), 640, "q4_1")
+        self.assertEqual(out.shape, (2, 12, 20 * 20))
+        self.assertEqual(out.dtype, np.uint8)
+
+    def test_a_q2_k_source_is_refused(self):
+        with self.assertRaises(ValueError):
+            U.q4k_to_codec(make_q2k(self.rng, rows=4), 640, "q4_1", src_type="q2_k")
+
+
 def rel_rms(a, b):
     return float(np.sqrt(((a - b) ** 2).mean() / (a ** 2).mean()))
 
@@ -338,6 +376,27 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(np.asarray(t.data).shape, (2, 4, row), codec)
             # lossy codecs report an RMS error instead of the block-error gate
             self.assertGreater(m["max_rms_error"], 0.0)
+
+    def test_q4_1_file_holds_the_same_weights_as_the_q5_1_file(self):
+        m = U.convert(self.src, self.dir / "q41.gguf", down="q4_1", samples=2)
+        self.assertEqual(m["down"], "q4_1")
+        self.assertLessEqual(m["max_block_error"], TOL)               # the lossless gate ran, not the RMS report
+        self.assertEqual(m["max_rms_error"], 0.0)
+        U.convert(self.src, self.dir / "q51.gguf", down="q5_1")
+        r41, r51 = gguf.GGUFReader(str(self.dir / "q41.gguf")), gguf.GGUFReader(str(self.dir / "q51.gguf"))
+        t51 = {t.name: t for t in r51.tensors}
+        for t in r41.tensors:
+            u = t51[t.name]
+            if t.name.endswith("ffn_down_exps.weight"):
+                self.assertEqual(t.tensor_type, Q.Q4_1, t.name)
+                self.assertEqual([int(x) for x in t.shape], [640, 4, 2], t.name)
+                self.assertEqual(np.asarray(t.data).shape, (2, 4, 400), t.name)
+                a = quants.dequantize(np.asarray(u.data), Q.Q5_1)
+                b = quants.dequantize(np.asarray(t.data), Q.Q4_1)
+                self.assertTrue(np.array_equal(a.view(np.uint32), b.view(np.uint32)), t.name)
+            else:
+                self.assertTrue(np.array_equal(np.asarray(t.data).view(np.uint8), np.asarray(u.data).view(np.uint8)),
+                                t.name)
 
     def test_a_q2_k_source_file(self):
         other = self.dir / "q2k.gguf"

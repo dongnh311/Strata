@@ -94,11 +94,28 @@ def q4k_to_q5_1(raw, keep_values: int = LOGICAL_IN) -> np.ndarray:
     return out.reshape(*lead, n_sub * Q51_BYTES)
 
 
+Q41_BYTES = 20
+
+
+def q4k_to_q4_1(raw, keep_values: int = LOGICAL_IN) -> np.ndarray:
+    """Q4_K rows -> Q4_1 rows: the q5_1 repack without its fifth bits.  Q4_1 is  d*q + m  with a 4-bit q, the same
+    fp16 d and m and the same nibble order as Q5_1, so every weight decodes to the bit-identical value of the q5_1 file
+    at 5 bits per value instead of 6 (the down experts shrink from 28.1 to 23.4 GiB)."""
+    q5 = q4k_to_q5_1(raw, keep_values)
+    lead = q5.shape[:-1]
+    b = q5.reshape(-1, Q51_BYTES)
+    if b[:, 4:8].any():
+        raise AssertionError("a q5_1 fifth bit is set: the Q4_K repack produced q > 15")
+    return np.concatenate([b[:, 0:4], b[:, 8:24]], axis=1).reshape(*lead, -1)
+
+
 # --- smaller down types.  q5_1 above is a repack (no loss beyond fp16).  The two below re-quantize the dequantized values:
 # q4_0 (4.5 bits per weight) and q2_0 (2.25: Strata's own 64-value blocks, grid {-1,0,1,2} x d, fp16 d, as tools/mtp_pack.py
 # writes them for the MTP head and as the base model's experts are stored).  They exist because the expert arena of the
 # q5_1 file (47.5 GiB) does not fit this PC's RAM beside a 512K context.
-CODECS = {"q5_1": (Q.Q5_1, Q51_VALUES, Q51_BYTES), "q4_0": (Q.Q4_0, 32, 18), "q2_0": (Q.Q2_0, 64, 18)}
+CODECS = {"q5_1": (Q.Q5_1, Q51_VALUES, Q51_BYTES), "q4_1": (Q.Q4_1, 32, Q41_BYTES), "q4_0": (Q.Q4_0, 32, 18),
+          "q2_0": (Q.Q2_0, 64, 18)}
+LOSSLESS = {"q5_1": (q4k_to_q5_1, Q.Q5_1), "q4_1": (q4k_to_q4_1, Q.Q4_1)}   # repacks of a Q4_K source: no re-quantization
 
 
 def encode_q2_0(w: np.ndarray) -> np.ndarray:
@@ -140,16 +157,16 @@ SOURCES = {"q4_k": Q.Q4_K, "q2_k": Q.Q2_K}      # the padded down types ds4 writ
 
 
 def q4k_to_codec(raw, keep_values: int = LOGICAL_IN, codec: str = "q5_1", src_type: str = "q4_k") -> np.ndarray:
-    """Padded K-quant rows -> rows of the first `keep_values` values in `codec` ("q5_1" repack, Q4_K source only; "q4_0" and
+    """Padded K-quant rows -> rows of the first `keep_values` values in `codec` ("q5_1" / "q4_1" repacks, Q4_K source only; "q4_0" and
     "q2_0" re-quantize the dequantized values, from Q4_K or Q2_K)."""
     if codec not in CODECS:
         raise ValueError(f"unknown down codec {codec!r} (choose from {sorted(CODECS)})")
     if src_type not in SOURCES:
         raise ValueError(f"unknown source type {src_type!r} (choose from {sorted(SOURCES)})")
-    if codec == "q5_1":
+    if codec in LOSSLESS:
         if src_type != "q4_k":
-            raise ValueError("the lossless q5_1 repack exists for a Q4_K source only")
-        return q4k_to_q5_1(raw, keep_values)
+            raise ValueError(f"the lossless {codec} repack exists for a Q4_K source only")
+        return LOSSLESS[codec][0](raw, keep_values)
     _, per_block, block_bytes = CODECS[codec]
     if keep_values <= 0 or keep_values % per_block:
         raise ValueError(f"keep_values {keep_values} is not a whole number of {per_block}-value {codec} blocks")
@@ -197,10 +214,11 @@ def _block_error(src_vals: np.ndarray, out_vals: np.ndarray) -> float:
     return float((err[~zero] / scale[~zero]).max()) if (~zero).any() else 0.0
 
 
-def check_experts(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int = LOGICAL_IN) -> tuple[float, float]:
+def check_experts(src_rows: np.ndarray, out_rows: np.ndarray, keep_values: int = LOGICAL_IN,
+                  codec: str = "q5_1") -> tuple[float, float]:
     """(worst block error, largest |value| in the dropped columns) for some experts, by gguf-py's dequantizers."""
     a = quants.dequantize(src_rows, Q.Q4_K)
-    b = quants.dequantize(out_rows, Q.Q5_1)
+    b = quants.dequantize(out_rows, LOSSLESS[codec][1])
     tail = float(np.abs(a[..., keep_values:]).max()) if a.shape[-1] > keep_values else 0.0
     return _block_error(a[..., :keep_values], b), tail
 
@@ -223,7 +241,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     `split` = (count, tensors): write split.no 0 / split.count / split.tensors.count so that the file is "shard 1 of
     `count`" next to the PLE table's own GGUF, which Strata's native loader requires (native_dense.cpp:88-99); `tensors`
     is the total over both files (this file's tensors + the PLE table's 1).
-    `down`: the type of the rewritten down experts - "q5_1" (repack, no loss), "q4_0" or "q2_0" (re-quantized; `workers`
+    `down`: the type of the rewritten down experts - "q5_1" or "q4_1" (repacks, no loss), "q4_0" or "q2_0" (re-quantized; `workers`
     processes share the work, one expert per job)."""
     src, dst = pathlib.Path(src), pathlib.Path(dst)
     if down not in CODECS:
@@ -267,8 +285,8 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
             plan.append((t, "copy"))
     if n_down == 0:
         raise ValueError("no routed down tensors found")
-    if down == "q5_1" and src_type != "q4_k":
-        raise ValueError("the lossless q5_1 repack exists for a Q4_K source only; use --down q4_0 or q2_0 for a Q2_K file")
+    if down in LOSSLESS and src_type != "q4_k":
+        raise ValueError(f"the lossless {down} repack exists for a Q4_K source only; use --down q4_0 or q2_0 for a Q2_K file")
 
     writer = gguf.GGUFWriter(str(dst), "qwen4exp")
     for field in reader.fields.values():
@@ -308,7 +326,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
     worst, worst_rms, tail_max, done, pending = 0.0, 0.0, 0.0, 0, 0
     rng = np.random.default_rng(0)
     t0 = time.time()
-    pool = make_pool(workers) if workers > 1 and down != "q5_1" else None
+    pool = make_pool(workers) if workers > 1 and down not in LOSSLESS else None
     try:
         for t, action in plan:
             if action == "drop":
@@ -329,8 +347,8 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                     out[e0:e0 + CHUNK_EXPERTS] = q4k_to_codec(t.data[e0:e0 + CHUNK_EXPERTS], keep_values, down, src_type)
             pick = np.unique(np.concatenate([[0, experts - 1], rng.integers(0, experts, size=max(0, samples - 2))])) if samples else []
             for e in pick:
-                if down == "q5_1":
-                    err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values)
+                if down in LOSSLESS:
+                    err, tail = check_experts(np.asarray(t.data[e]), out[e], keep_values, down)
                     worst, tail_max = max(worst, err), max(tail_max, tail)
                     if err > TOL:
                         writer.close()
@@ -345,7 +363,7 @@ def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progre
                 pending = 0
             done += 1
             if progress:
-                progress(done, n_down, t.name, time.time() - t0, worst if down == "q5_1" else worst_rms)
+                progress(done, n_down, t.name, time.time() - t0, worst if down in LOSSLESS else worst_rms)
         _sync(writer)
         writer.close()
     finally:
@@ -369,18 +387,18 @@ def main(argv=None) -> int:
                     help="write split.no 0 / split.count COUNT / split.tensors.count TENSORS (the file becomes shard 1 of "
                          "COUNT beside the PLE table's GGUF: 2 1224 for the PLE shard of the GSQ-RCO Q2_0 model)")
     ap.add_argument("--down", choices=sorted(CODECS), default="q5_1",
-                    help="type of the rewritten down experts: q5_1 = lossless repack (default), q4_0 / q2_0 = re-quantized, smaller")
+                    help="type of the rewritten down experts: q5_1 = lossless repack (default), q4_1 = the same weights in 5 bits instead of 6, q4_0 / q2_0 = re-quantized, smaller")
     ap.add_argument("--workers", type=int, default=1, help="worker processes for q4_0 / q2_0 (default 1)")
     a = ap.parse_args(argv)
 
     def progress(done, total, name, secs, worst):
-        what = "worst block error" if a.down == "q5_1" else "worst relative RMS error"
+        what = "worst block error" if a.down in LOSSLESS else "worst relative RMS error"
         print(f"  [{done:2d}/{total}] {name}  {secs:6.0f}s  {what} so far {worst:.2e}", flush=True)
 
     m = convert(a.src, a.dst, keep_values=a.keep, samples=a.samples, progress=progress, sync_bytes=a.sync_mib << 20,
                 split=tuple(a.split) if a.split else None, down=a.down, workers=a.workers)
     a.dst.with_suffix(a.dst.suffix + ".json").write_text(json.dumps(m, indent=1), encoding="utf-8")
-    err = (f"worst sampled block error {m['max_block_error']:.2e} (limit {m['tolerance']:.2e})" if m["down"] == "q5_1"
+    err = (f"worst sampled block error {m['max_block_error']:.2e} (limit {m['tolerance']:.2e})" if m["down"] in LOSSLESS
            else f"worst sampled relative RMS error {m['max_rms_error']:.3f}")
     print(f"done: {m['down_tensors_converted']} down tensors rewritten as {m['down']}, {len(m['dropped_tensors'])} MTP tensors dropped, "
           f"blocks {m['blocks_in']} -> {m['blocks_out']}, {err}, largest value in the dropped columns {m['dropped_tail_max_abs']:.3g}")
