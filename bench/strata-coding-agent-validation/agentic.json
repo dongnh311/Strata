@@ -1,0 +1,32 @@
+[
+ {
+  "id": "cli-json-flag",
+  "lang": "python-multistep",
+  "done": true,
+  "turns": 7,
+  "cc_error": false,
+  "permission_denials": 0,
+  "secs": 120.3,
+  "detail": "rc=0 out={\"a\": 3, \"b\": 2, \"c\": 1}"
+ },
+ {
+  "id": "rust-bug-multifile",
+  "lang": "rust-multistep",
+  "done": true,
+  "turns": 4,
+  "cc_error": false,
+  "permission_denials": 0,
+  "secs": 55.6,
+  "detail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+ },
+ {
+  "id": "py-rename-refactor",
+  "lang": "python-multistep",
+  "done": true,
+  "turns": 11,
+  "cc_error": false,
+  "permission_denials": 0,
+  "secs": 81.4,
+  "detail": "rc=0 out=[3.1416, 9]"
+ }
+]

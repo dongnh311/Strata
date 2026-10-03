@@ -1,0 +1,41 @@
+[
+ {
+  "size": "128k",
+  "char_budget": 460000,
+  "prompt_tokens": 156176,
+  "secs": 265.9,
+  "recall": {
+   "marker_alpha": true,
+   "marker_beta": true,
+   "marker_gamma": true
+  },
+  "n_correct": 3,
+  "answer_head": "marker_alpha=723347347957\nmarker_beta=984107995871\nmarker_gamma=171999863748"
+ },
+ {
+  "size": "256k",
+  "char_budget": 920000,
+  "prompt_tokens": 311900,
+  "secs": 616.4,
+  "recall": {
+   "marker_alpha": true,
+   "marker_beta": true,
+   "marker_gamma": true
+  },
+  "n_correct": 3,
+  "answer_head": "marker_alpha=723347347957\nmarker_beta=984107995871\nmarker_gamma=171999863748"
+ },
+ {
+  "size": "512k",
+  "char_budget": 1760000,
+  "prompt_tokens": 311900,
+  "secs": 0.4,
+  "recall": {
+   "marker_alpha": false,
+   "marker_beta": false,
+   "marker_gamma": false
+  },
+  "n_correct": 0,
+  "answer_head": "Prompt is too long"
+ }
+]

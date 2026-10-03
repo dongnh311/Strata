@@ -28,9 +28,52 @@ prints a cosmetic `[claude-code:unrecognized_model]` warning and proceeds.
   present in `claude.exe` v2.1.286) raises it: a re-run reported `"contextWindow":524288`. The remaining Dimensions
   run with these set.
 
-## Dimension 1 — Long-context recall (256K–512K)
+## Dimension 1 — Long-context recall: **perfect to 437K tokens** (2026-10-03)
 
-_pending_
+Three needles (functions returning unique 12-digit constants) at ~10/50/90% depth in a context of real concatenated
+source; the whole context is in one user message (so recall is the model's, not a tool's); asked for all three
+constants. Driver: `run_recall.py` / `recall_440.py`. (Char→token ratio measured at ~2.95 for this source.)
+
+| Target | Actual tokens | Recall (α/β/γ at 10/50/90%) | Cold prefill |
+| :--- | --: | :--- | :--- |
+| 128K | 156,176 | **3/3** ✅ | 266 s |
+| 256K | 311,900 | **3/3** ✅ | 616 s |
+| ~440K | 437,225 | **3/3** ✅ | ~16 min (partly cached) |
+| ~500K+ | — | n/a — **rejected** | Claude Code: "Prompt is too long" |
+
+**Recall is perfect at every testable depth, including 437K tokens — well past the model's 262K trained length, into
+the YaRN-extrapolated region.** No degradation was found; the feared YaRN fall-off did not appear for retrieval.
+
+**Practical ceiling ≈ 475K tokens of your content, via Claude Code.** Claude Code reserves its max output
+(~32K) and system prompt (~16.5K) from the 524288 window and refuses a prompt that would exceed what's left, with
+"Prompt is too long" *before* it reaches Strata (a clean refusal, not a silent truncation). So the full 512K cannot
+be filled with your code through Claude Code — the usable input tops out near 475K tokens. Strata itself supports
+the full 524288; the cap is Claude Code's accounting.
+
+## Recommendation — **GO**, with caveats (2026-10-03)
+
+Driven by Claude Code, this Strata model works as a long-context coding agent. Against the plan's bar:
+
+| Dimension | Bar | Result |
+| :--- | :--- | :--- |
+| 0 Integration | must pass | ✅ Claude Code drives Strata; tool protocol holds |
+| 1 Recall | ≥70% at your depth | ✅ 100% (3/3) to 437K tokens, no degradation |
+| 2 Tool use | ≥95% valid | ✅ 100%; 11/11 sessions clean, up to 11 turns |
+| 3 Correctness | ≥70% pass | ✅ 7/7 checkable (Python, Rust, JS, Java) |
+| 4 Speed | usable at your depth | ⚠️ warm turns fast (~37 tok/s); **cold load of a big context is slow (4–16 min)** |
+
+**Use it as a main coding model** via Claude Code, keeping these in mind:
+1. **Unlock the window**: set `CLAUDE_CODE_MAX_CONTEXT_TOKENS=524288`, `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`,
+   `CLAUDE_CODE_AUTO_COMPACT_WINDOW=524288`, plus `ANTHROPIC_SMALL_FAST_MODEL` = the model name. Without them Claude Code
+   caps at 200K and auto-compacts.
+2. **Usable context ≈ 475K tokens** of your code (not the full 512K) through Claude Code.
+3. **Cold load is the cost, and it is minutes** (≈4 min at 156K, ≈10 min at 312K, ≈16 min near the top). Load a big
+   repo/context once and work within it — warm turns are 1–2 s. Avoid re-sending huge cold contexts.
+4. **C++/Kotlin correctness was not verified here** (no `cl.exe`/`vcvars`/`kotlinc` on the agent's PATH). Rust (a
+   systems language) passed cleanly, so this is a harness gap, not a known model weakness; verify C++/Kotlin in real
+   use or put those compilers on the agent's PATH.
+5. **Serial FIFO**: Strata serves one request at a time, so parallel subagents queue — they are not a speed win.
+6. The model is **uncensored** (refusal projection on); keep that in mind for shell commands it may run without a caveat.
 
 ## Dimension 2 — Agentic tool use: **3/3 complete, tool protocol reliable** (2026-10-03)
 
@@ -71,9 +114,24 @@ no C++ compiler on PATH (MSVC `cl.exe` needs a `vcvars64` environment), so the m
 the agent needs `cl.exe`/`g++`/`kotlinc` on PATH; **Kotlin was not run (no `kotlinc` installed); Java stands in for
 the JVM.** This says nothing about whether the model can write C++/Kotlin — only that the harness could not check it.
 
-## Dimension 4 — Speed at depth
+## Dimension 4 — Speed at depth (2026-10-03)
 
-_pending_
+From the engine log during the recall and coding runs (`prompt … read in … ms`, `… generated in … ms`):
+
+| Context | Cold prefill (read) | Cold time-to-usable | Decode | Draft accept |
+| :--- | :--- | :--- | :--- | :--- |
+| ~17K (a coding turn, warm) | 57–321 new tokens, 1–2 s | ~1–2 s | 34–48 tok/s | ~85–98% |
+| 156K (cold) | 254.8 s @ 612.9 tok/s | **~4.2 min** | 37.8 tok/s | 270/314 |
+| 312K (cold) | 605.3 s @ 515.3 tok/s | **~10.1 min** | 38.6 tok/s | 260/289 |
+
+What this means for interactive coding:
+- **The cost is the first cold load of a big context**: ~4 min at 156K, ~10 min at 312K, and prefill *rate* falls
+  with depth (613 → 515 tok/s) as the attention span grows. Loading a large repo into a fresh session is a
+  multi-minute wait.
+- **After that, turns are cheap.** Strata's conversation cache reuses the whole prefix, so a follow-up turn reads
+  only its new tokens (tens to a few hundred) in 1–2 s, then decodes at ~37 tok/s. A long agent session is
+  responsive once the context is warm — the slow part happens once.
+- **Decode holds at depth** (~38 tok/s at 312K, same as short context) and draft acceptance stays ~85%.
 
 ## Recommendation (go/no-go)
 

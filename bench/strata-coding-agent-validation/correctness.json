@@ -1,0 +1,74 @@
+[
+ {
+  "id": "py-fizzbuzz-test",
+  "lang": "python",
+  "pass": true,
+  "detail": ".                                                                        [100%]\n1 passed in 0.00s",
+  "turns": 4,
+  "cc_error": false,
+  "secs": 53.1
+ },
+ {
+  "id": "py-bugfix",
+  "lang": "python",
+  "pass": true,
+  "detail": ".                                                                        [100%]\n1 passed in 0.00s",
+  "turns": 6,
+  "cc_error": false,
+  "secs": 55.5
+ },
+ {
+  "id": "py-multifile",
+  "lang": "python",
+  "pass": true,
+  "detail": ".                                                                        [100%]\n1 passed in 0.00s",
+  "turns": 5,
+  "cc_error": false,
+  "secs": 45.8
+ },
+ {
+  "id": "rust-palindrome",
+  "lang": "rust",
+  "pass": true,
+  "detail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  "turns": 8,
+  "cc_error": false,
+  "secs": 82.8
+ },
+ {
+  "id": "rust-borrowfix",
+  "lang": "rust",
+  "pass": true,
+  "detail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  "turns": 4,
+  "cc_error": false,
+  "secs": 47.9
+ },
+ {
+  "id": "js-dedupe",
+  "lang": "node",
+  "pass": true,
+  "detail": "rc=0 out=[3,1,2]",
+  "turns": 3,
+  "cc_error": false,
+  "secs": 50.5
+ },
+ {
+  "id": "cpp-gcd",
+  "lang": "cpp",
+  "pass": false,
+  "detail": "rc=1 out='vswhere.exe' is not recognized as an internal or external command,\noperable program or batch file.\n'prog.exe' is not recognized as an internal or external command,\noperable program or batch file.",
+  "turns": 19,
+  "cc_error": false,
+  "secs": 279.4
+ },
+ {
+  "id": "java-reverse",
+  "lang": "java",
+  "pass": true,
+  "detail": "rc=0 out=olleh",
+  "turns": 3,
+  "cc_error": false,
+  "secs": 55.3
+ }
+]
