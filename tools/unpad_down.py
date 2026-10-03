@@ -228,10 +228,24 @@ def _field(reader, key):
     return None if f is None else f.contents()
 
 
+def _release_read_pages() -> None:
+    """Hand the pages of the memory-mapped source back to Windows.  They stay in this process's working set once read,
+    and the 51.6 GiB source drove the PC's available memory to 0.7 GiB halfway through a run; trimmed, they are clean
+    file pages on the standby list, which Windows counts as available and reuses at once.  A no-op elsewhere."""
+    if os.name != "nt":
+        return
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.GetCurrentProcess.restype = ctypes.c_void_p
+    k32.SetProcessWorkingSetSize.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+    k32.SetProcessWorkingSetSize(k32.GetCurrentProcess(), ctypes.c_size_t(-1).value, ctypes.c_size_t(-1).value)
+
+
 def _sync(writer) -> None:
     for f in writer.fout:
         f.flush()
         os.fsync(f.fileno())
+    _release_read_pages()
 
 
 def convert(src, dst, *, keep_values: int = LOGICAL_IN, samples: int = 4, progress=None,

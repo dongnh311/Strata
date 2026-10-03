@@ -355,6 +355,19 @@ class EndToEnd(unittest.TestCase):
         kept = sum(1 for n in self.tensors if not n.startswith("blk.2."))
         self.assertGreaterEqual(fs.call_count, kept)
 
+    def test_the_source_pages_are_given_back_as_it_goes(self):
+        # the q4_1 run on 2026-10-03 drove this PC's AVAILABLE memory to 0.7 GiB at layer 24 of 48: the source is a
+        # 51.6 GiB memmap and the pages it has read stay in the process's working set on Windows, so every sync must
+        # also hand them back (they are clean file pages: they become standby memory, which counts as available)
+        from unittest import mock
+        with mock.patch.object(U, "_release_read_pages") as rel:
+            self.run_convert(sync_bytes=1)
+        kept = sum(1 for n in self.tensors if not n.startswith("blk.2."))
+        self.assertGreaterEqual(rel.call_count, kept)
+
+    def test_releasing_pages_is_safe_to_call(self):
+        U._release_read_pages()          # a no-op off Windows; on Windows it must not raise
+
     def test_the_default_still_syncs_once_at_the_end(self):
         import os
         from unittest import mock
