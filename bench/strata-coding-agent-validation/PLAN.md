@@ -39,8 +39,18 @@ Qwen fine-tune serving the Anthropic API. If the basic loop does not hold, stop 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:18080
 export ANTHROPIC_AUTH_TOKEN=local-strata          # Strata has no api_key set, so any token passes; the var must exist
 export ANTHROPIC_MODEL=qwen38-orca-q2k-refusal
+export ANTHROPIC_SMALL_FAST_MODEL=qwen38-orca-q2k-refusal   # background/haiku calls hit Strata too (it rejects other names)
 export CLAUDE_CONFIG_DIR="$PWD/cc-profile"          # a throwaway config dir, so settings/history stay separate
+# Unlock the real 512K window: Claude Code defaults an UNKNOWN model to a 200K context and auto-compacts there.
+# These three (verified in claude.exe v2.1.286; `contextWindow` in the JSON result goes 200000 -> 524288) lift it:
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=524288
+export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=524288
 ```
+
+Seed `$CLAUDE_CONFIG_DIR/.claude.json` with `{"hasCompletedOnboarding": true, "bypassPermissionsModeAccepted": true}`
+so headless `claude -p` runs do not stop on onboarding, and pass `--dangerously-skip-permissions` for the throwaway
+scratch repos.
 
 **Checks (each a `claude -p` headless run in a scratch git repo):**
 1. No tools: `claude -p "reply with exactly: OK"` → returns, streams, no protocol error.
