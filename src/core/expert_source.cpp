@@ -1256,7 +1256,21 @@ bool FileExpertSource::pin_cache_complement(
                 }
                 copied.fetch_add(blob_bytes);
             }
-#if !defined(_WIN32)
+#if defined(_WIN32)
+            // Per layer, like the madvise below: the mapped pages this layer's copy touched leave the working set for
+            // the standby list (VirtualUnlock on pages that are not locked; the source ranges are never locked, the
+            // arena is not touched).  Released only once at the end, they piled up beside the arena: a 24 GiB
+            // complement drove the PC's AVAILABLE memory to 0 while loading (unc48L q5_1, 2026-10-03).
+            if (!role_ptr_.empty()) {
+                for (int r = 0; r < 3; ++r) {
+                    const size_t i = (size_t) (3 * layer + r);
+                    (void) VirtualUnlock((LPVOID) role_ptr_[i], (SIZE_T) (role_bytes_[i] * (uint64_t) n_expert_));
+                }
+            } else {
+                (void) VirtualUnlock((LPVOID) (base_ + (size_t) layer_offsets_[(size_t) layer]),
+                                     (SIZE_T) (blob_bytes * (uint64_t) n_expert_));
+            }
+#else
             if (role_ptr_.empty()) {   // experts.bin; the GGUF in place leaves its pages to the OS
             const uint64_t layer_offset = layer_offsets_[(size_t) layer];
             const uint64_t layer_bytes = blob_bytes * (uint64_t) n_expert_;
