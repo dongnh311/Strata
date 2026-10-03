@@ -472,15 +472,27 @@ private:
     std::map<std::string, MetaValue> meta_;
 };
 
-// Bytes of a tensor's payload from its shape and block geometry; 0 when the type is unknown, a row is not whole
-// blocks, or the count overflows.
+// Bytes of one row of `n` values that ends inside a block, or 0: a Q2_K row is whole blocks, then scales[0:8],
+// qs[0:32] and d/dmin of a 128-value half (44 bytes; tools/unpad_down.py --down q2_k).  Other types have no such rows.
+inline uint64_t trimmed_row_bytes(uint32_t type, uint64_t n) {
+    if (type == 10 && n != 0 && n % 128 == 0) return n / 256 * 84 + (n % 256 ? 44 : 0);
+    return 0;
+}
+
+// Bytes of a tensor's payload from its shape and block geometry; 0 when the type is unknown, a row is neither whole
+// blocks nor a trimmed row (trimmed_row_bytes), or the count overflows.
 inline uint64_t tensor_payload_bytes(const TensorInfo& t) {
     int be = 0, bb = 0;
-    if (t.shape.empty() || !block_geometry(t.type, be, bb) || t.shape[0] % (uint64_t) be) return 0;
+    if (t.shape.empty() || !block_geometry(t.type, be, bb)) return 0;
     uint64_t elements = 1;
     for (uint64_t d : t.shape) {
         if (d == 0 || elements > (std::numeric_limits<uint64_t>::max)() / d) return 0;
         elements *= d;
+    }
+    if (t.shape[0] % (uint64_t) be) {
+        const uint64_t row = trimmed_row_bytes(t.type, t.shape[0]), rows = elements / t.shape[0];
+        if (row == 0 || rows > (std::numeric_limits<uint64_t>::max)() / row) return 0;
+        return rows * row;
     }
     const uint64_t blocks = elements / (uint64_t) be;
     if (blocks > (std::numeric_limits<uint64_t>::max)() / (uint64_t) bb) return 0;

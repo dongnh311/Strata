@@ -963,6 +963,9 @@ if(STRATA_NATIVE_EXPERTS)
       # the GPU and the prompt dequantizers, with the IQ2_XXS gate/up of unc48L and the Q4_K of UD-Q4_K_XL
       add_test(NAME native_expert_parity_q4_1_pair COMMAND native_expert_parity --q4_1-pair iq2_xxs q4_K)
       set_tests_properties(native_expert_parity_q4_1_pair PROPERTIES TIMEOUT 180)
+      # trimmed Q2_K down rows (a ds4 Q2KDownPad768 file without its padding) against the padded rows through ggml
+      add_test(NAME native_expert_parity_q2k_trim COMMAND native_expert_parity --q2k-trim iq2_xxs q4_K)
+      set_tests_properties(native_expert_parity_q2k_trim PROPERTIES TIMEOUT 180)
       # #290: the BF16 token embedding (--embd-gguf) gathered and dequantized bit for bit
       add_test(NAME native_expert_parity_bf16_embd COMMAND native_expert_parity --bf16-embd)
       # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run

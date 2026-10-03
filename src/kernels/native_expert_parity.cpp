@@ -600,6 +600,149 @@ int check_q4_1_pair(const cpu::NativeFmt& f5, const std::vector<uint8_t>& b5, co
     return ok ? 0 : 1;
 }
 
+// ---- Q2_K down rows without the ds4 padding (tools/unpad_down.py --down q2_k).  A padded row is 3 Q2_K blocks (768
+// values; the last 128 meet zero activations), a trimmed row keeps the 2 whole blocks and scales[0:8], qs[0:32] and
+// d/dmin of the third: 212 of 252 bytes.  The oracle is the PADDED row through ggml - the file as ds4 runs it: its
+// to_float (first 640 values) for the float reference and the prompt-path dequantizer, and its vec_dot over 768 values
+// against h padded with zeros for the CPU rows.  A negative control flips one code of the half block.
+constexpr int64_t FF_PAD = 768;
+constexpr size_t Q2K_ROW_PAD = 252;
+
+std::vector<uint8_t> q2k_trim_rows(const uint8_t* padded, int64_t rows) {
+    const size_t trim = cpu::q2k_trim_row_bytes(FF);
+    std::vector<uint8_t> out((size_t) rows * trim);
+    for (int64_t r = 0; r < rows; ++r) {
+        const uint8_t* p = padded + (size_t) r * Q2K_ROW_PAD;
+        uint8_t* o = out.data() + (size_t) r * trim;
+        std::memcpy(o, p, 168);                 // 2 whole blocks
+        std::memcpy(o + 168, p + 168, 8);       // scales of sub-blocks 0..7 of the third
+        std::memcpy(o + 176, p + 168 + 16, 32); // its codes of values 0..127
+        std::memcpy(o + 208, p + 168 + 80, 4);  // its d, dmin
+    }
+    return out;
+}
+
+// a synthetic expert: gate/up of type `gu`, a padded Q2_K down whose 128 padding columns hold RANDOM weights (the
+// trimmed rows must not depend on them); returns the padded down rows and fills the trimmed blob
+std::vector<uint8_t> q2k_synthetic(int gu, int seed, cpu::NativeFmt& f, std::vector<uint8_t>& blob) {
+    std::string err;
+    if (!cpu::native_fmt(gu, GGML_TYPE_Q2_K, H, FF, f, err)) { std::printf("q2_K trim: %s\n", err.c_str()); std::exit(1); }
+    cpu::NativeFmt g = f;   // gate/up through synthetic_blob, with a Q8_0 down placeholder of the same row count
+    std::string e2;
+    cpu::native_fmt(gu, GGML_TYPE_Q8_0, H, FF, g, e2);
+    const auto gb = synthetic_blob(g, seed);
+    std::mt19937 rng(seed + 1000);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<float> w((size_t) H * FF_PAD);
+    for (int64_t r = 0; r < H; ++r)
+        for (int64_t c = 0; c < FF_PAD; ++c) w[(size_t) (r * FF_PAD + c)] = 0.02f * (0.5f + (float) (r % 5) / 5.0f) * nd(rng);
+    std::vector<uint8_t> padded((size_t) H * Q2K_ROW_PAD);
+    ggml_quantize_chunk(GGML_TYPE_Q2_K, w.data(), padded.data(), 0, H, FF_PAD, nullptr);
+    blob.assign(f.bytes, 0);
+    std::memcpy(blob.data(), gb.data(), f.down_off);
+    const auto trim = q2k_trim_rows(padded.data(), H);
+    std::memcpy(blob.data() + f.down_off, trim.data(), trim.size());
+    return padded;
+}
+
+int check_q2k_trim(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, const std::vector<uint8_t>& padded,
+                   const std::string& label, cudaStream_t s) {
+    if (f.d_type != GGML_TYPE_Q2_K || f.d_tail != 128 || f.d_row != 212 ||
+        !strata::kernels::native_expert_supported(f.gu_type, f.d_type, H, FF) ||
+        strata::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF).bytes != f.bytes) {
+        std::printf("%-9s q2_K trim: the CPU and GPU layouts disagree or refuse it  FAIL\n", label.c_str());
+        return 1;
+    }
+    std::mt19937 rng(23);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<float> x((size_t) NT * H);
+    for (auto& v : x) v = nd(rng);
+    // (a) float reference from the padded rows
+    const auto* tg = ggml_get_type_traits((ggml_type) f.gu_type);
+    const auto* tq = ggml_get_type_traits(GGML_TYPE_Q2_K);
+    std::vector<float> G((size_t) FF * H), U((size_t) FF * H), D((size_t) H * FF), row(FF_PAD);
+    for (int64_t r = 0; r < FF; ++r) {
+        tg->to_float(blob.data() + r * f.gu_row, G.data() + r * H, H);
+        tg->to_float(blob.data() + f.up_off + r * f.gu_row, U.data() + r * H, H);
+    }
+    for (int64_t r = 0; r < H; ++r) {
+        tq->to_float(padded.data() + (size_t) r * Q2K_ROW_PAD, row.data(), FF_PAD);
+        std::memcpy(D.data() + r * FF, row.data(), FF * 4);
+    }
+    std::vector<float> ref((size_t) NT * H);
+    for (int k = 0; k < NT; ++k) {
+        std::vector<float> h(FF);
+        for (int64_t r = 0; r < FF; ++r) {
+            double g = 0, u = 0;
+            for (int64_t i = 0; i < H; ++i) { g += (double) G[r * H + i] * x[k * H + i]; u += (double) U[r * H + i] * x[k * H + i]; }
+            h[r] = (float) (g / (1.0 + std::exp(-g)) * u);
+        }
+        for (int64_t r = 0; r < H; ++r) {
+            double o = 0;
+            for (int64_t i = 0; i < FF; ++i) o += (double) D[r * FF + i] * h[i];
+            ref[k * H + r] = (float) o;
+        }
+    }
+    // (b) CPU (trimmed) and (b') ggml on the padded rows with the same h, zero-padded to 768 and quantized as Q8_K
+    const auto c = cpu_expert(f, blob, x);
+    std::vector<float> cpad((size_t) NT * H);
+    {
+        std::vector<std::vector<uint8_t>> act(NT, std::vector<uint8_t>(cpu::kNativeActBytes));
+        std::vector<std::vector<float>> ff(NT, std::vector<float>(FF));
+        const void* a[NT];
+        float* ffp[NT];
+        for (int k = 0; k < NT; ++k) {
+            cpu::native_quant_act(f, x.data() + k * H, act[k].data());
+            a[k] = act[k].data();
+            ffp[k] = ff[k].data();
+        }
+        cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
+        const auto* tc = ggml_get_type_traits_cpu(GGML_TYPE_Q2_K);
+        const auto* q8k = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K);
+        std::vector<uint8_t> hq(ggml_row_size(GGML_TYPE_Q8_K, FF_PAD));
+        std::vector<float> hp(FF_PAD, 0.f);
+        for (int k = 0; k < NT; ++k) {
+            std::memcpy(hp.data(), ff[k].data(), FF * 4);
+            q8k->from_float(hp.data(), hq.data(), FF_PAD);
+            for (int64_t r = 0; r < H; ++r)
+                tc->vec_dot((int) FF_PAD, &cpad[k * H + r], 0, padded.data() + (size_t) r * Q2K_ROW_PAD, 0, hq.data(), 0, 1);
+        }
+    }
+    // (c) GPU
+    const auto g = gpu_expert(f, blob, x, s);
+    // (d) the prompt path's dequantizer on the trimmed rows, fp16, against fp16 of the padded rows' to_float
+    size_t dq_differ = 0;
+    {
+        const size_t bytes = blob.size() - f.down_off;
+        void* src = nullptr;
+        uint16_t* d16 = nullptr;
+        cudaMalloc(&src, bytes);
+        cudaMalloc((void**) &d16, (size_t) H * FF * 2);
+        cudaMemcpy(src, blob.data() + f.down_off, bytes, cudaMemcpyHostToDevice);
+        strata::kernels::iq_dequant_rows_f16(f.d_type, src, H, FF, d16, s);
+        cudaStreamSynchronize(s);
+        std::vector<uint16_t> got((size_t) H * FF);
+        cudaMemcpy(got.data(), d16, got.size() * 2, cudaMemcpyDeviceToHost);
+        cudaFree(src); cudaFree(d16);
+        for (size_t i = 0; i < got.size(); ++i) dq_differ += got[i] != ggml_fp32_to_fp16(D[i]);
+    }
+    // (e) negative control: one code of the half block of down row 5
+    std::vector<uint8_t> bad = blob;
+    bad[f.down_off + 5 * f.d_row + 168 + 8 + 3] ^= 0x03;
+    const auto gbad = gpu_expert(f, bad, x, s), cbad = cpu_expert(f, bad, x);
+    const size_t gneg = bits_differ(gbad, g), cneg = bits_differ(cbad, c);
+    const double ec = rel(c, ref), eg = rel(g, ref), ecp = rel(c, cpad), ecg = rel(c, g);
+    // trimmed CPU rows vs ggml over the padded rows: the same products, summed as two calls instead of one
+    const bool ok = ec < 3e-2 && eg < 3e-2 && ecp < 1e-6 && dq_differ == 0 && gneg > 0 && cneg > 0 &&
+                    std::isfinite(ec) && std::isfinite(eg);
+    std::printf("%-9s %s/q2_K trimmed (212 B rows): cpu rel %.2e, gpu rel %.2e vs the padded rows' float expert; cpu vs "
+                "ggml on the padded rows rel %.2e; cpu-gpu %.2e; dequant fp16 values that differ %zu of %lld; one flipped "
+                "half-block code changes %zu gpu / %zu cpu values  %s\n", label.c_str(),
+                ggml_type_name((ggml_type) f.gu_type), ec, eg, ecp, ecg, dq_differ, (long long) (H * FF), gneg, cneg,
+                ok ? "ok" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 // #290: the BF16 token embedding (--embd-gguf) - iq_embed_rows and iq_dequant_f32 on a random BF16 table against
 // the exact widening (bits << 16), every bit; rows gathered out of order, with repeats
 int check_bf16_embd(cudaStream_t s) {
@@ -663,6 +806,8 @@ int main(int argc, char** argv) {
                              "       native_expert_parity --q5_1-min\n"
                              "       native_expert_parity --q4_1-pair GU ...            (Q4_1 down vs its Q5_1 twin)\n"
                              "       native_expert_parity --q4_1-pair-gguf <q5_1 shard> <q4_1 shard> [layer ...]\n"
+                             "       native_expert_parity --q2k-trim GU ...             (trimmed Q2_K down vs its padded rows)\n"
+                             "       native_expert_parity --q2k-trim-gguf <trimmed shard> <ds4 padded gguf> [layer ...]\n"
                              "       native_expert_parity --bf16-embd\n");
         return 2;
     }
@@ -734,6 +879,57 @@ int main(int argc, char** argv) {
                 continue;
             }
             failures += check_q4_1_pair(f5, b5, f4, b4, "layer " + std::to_string(l), s);
+        }
+    } else if (mode == "--q2k-trim") {
+        // synthetic: gate/up of each named type, a padded Q2_K down (random padding) and its trimmed rows
+        for (int i = 2; i < argc; ++i) {
+            const int gu = type_of(argv[i]);
+            if (gu < 0) { std::printf("%s: unknown type\n", argv[i]); ++failures; continue; }
+            cpu::NativeFmt f;
+            std::vector<uint8_t> blob;
+            const auto padded = q2k_synthetic(gu, 200 + i, f, blob);
+            failures += check_q2k_trim(f, blob, padded, "synthetic", s);
+        }
+    } else if (mode == "--q2k-trim-gguf") {
+        // real rows: expert E of each layer from the trimmed shard, and its down rows from the padded ds4 file
+        if (argc < 4) { std::fprintf(stderr, "usage: native_expert_parity --q2k-trim-gguf <trimmed shard> <ds4 Q2KDownPad768 gguf> [layer ...]\n"); return 2; }
+        const strata::GgufModel mt(strata::gguf_split_paths(argv[2])), mp(std::vector<std::string>{argv[3]});
+        std::vector<int> layers;
+        for (int i = 4; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
+        if (layers.empty()) layers = {0, 1, 2, 3, 20, 47};
+        for (int l : layers) {
+            const std::string blk = "blk." + std::to_string(l) + ".ffn_";
+            const strata::TensorInfo* t[3] = {};
+            const uint8_t* data[3] = {};
+            const char* roles[3] = {"gate", "up", "down"};
+            for (int r = 0; r < 3; ++r) {
+                size_t at = 0;
+                t[r] = mt.find(blk + roles[r] + "_exps.weight", &at);
+                if (t[r]) data[r] = mt.shard(at).tensor_data(*t[r]);
+            }
+            size_t pat = 0;
+            const strata::TensorInfo* tp = mp.find(blk + "down_exps.weight", &pat);
+            cpu::NativeFmt f;
+            std::string err;
+            if (!t[0] || !t[1] || !t[2] || !tp || tp->type != GGML_TYPE_Q2_K || tp->shape.empty() || tp->shape[0] != FF_PAD ||
+                !cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err) || f.d_tail != 128) {
+                std::printf("layer %d: not a trimmed Q2_K layer with a padded source (%s)\n", l, err.c_str());
+                ++failures;
+                continue;
+            }
+            std::vector<uint8_t> blob(f.bytes);
+            std::memcpy(blob.data(), data[0] + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.up_off, data[1] + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.down_off, data[2] + (size_t) E * (f.bytes - f.down_off), f.bytes - f.down_off);
+            const uint8_t* pd = mp.shard(pat).tensor_data(*tp) + (size_t) E * H * Q2K_ROW_PAD;
+            std::vector<uint8_t> padded(pd, pd + (size_t) H * Q2K_ROW_PAD);
+            // the trimmed rows must be the padded rows' bytes, cut as unpad_down cuts them
+            if (q2k_trim_rows(padded.data(), H) != std::vector<uint8_t>(blob.begin() + f.down_off, blob.end())) {
+                std::printf("layer %d: the trimmed rows are not the source's bytes  FAIL\n", l);
+                ++failures;
+                continue;
+            }
+            failures += check_q2k_trim(f, blob, padded, "layer " + std::to_string(l), s);
         }
     } else if (mode == "--synthetic") {
         for (int i = 2; i < argc; ++i) {

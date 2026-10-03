@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 namespace strata::kernels::cpu {
@@ -29,6 +30,16 @@ void init_once() {
 
 bool native_experts_available() noexcept { return true; }
 
+namespace {
+constexpr size_t kQ2KBlock = 84, kQ2KHalf = 44;   // block_q2_K: scales[16] @0, qs[64] @16, d @80, dmin @82
+constexpr int kQ2KType = 10;
+}  // namespace
+
+size_t q2k_trim_row_bytes(int64_t n) noexcept {
+    if (n <= 0 || n % 128) return 0;
+    return (size_t) (n / 256) * kQ2KBlock + (n % 256 ? kQ2KHalf : 0);
+}
+
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
     const ggml_type_traits_cpu* tg = traits(gu_type);
@@ -43,8 +54,11 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
         err = "native experts: ggml-cpu cannot quantize an activation for this layer";
         return false;
     }
-    if (n_embd % ggml_blck_size((ggml_type) gu_type) || n_ff % ggml_blck_size((ggml_type) d_type) ||
-        n_embd % ggml_blck_size(tg->vec_dot_type) || n_ff % ggml_blck_size(td->vec_dot_type)) {
+    // a trimmed Q2_K down row (see NativeFmt::d_tail): its length is not whole blocks, so it is sized here, and the
+    // whole-block check applies to the rest of the layer only
+    const bool trim = d_type == kQ2KType && n_ff % 256 == 128;
+    if (n_embd % ggml_blck_size((ggml_type) gu_type) || n_embd % ggml_blck_size(tg->vec_dot_type) ||
+        (!trim && (n_ff % ggml_blck_size((ggml_type) d_type) || n_ff % ggml_blck_size(td->vec_dot_type)))) {
         err = "native experts: expert geometry is not whole blocks";
         return false;
     }
@@ -55,12 +69,13 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     f.n_embd = n_embd;
     f.n_ff = n_ff;
     f.gu_row = ggml_row_size((ggml_type) gu_type, n_embd);
-    f.d_row = ggml_row_size((ggml_type) d_type, n_ff);
+    f.d_row = trim ? q2k_trim_row_bytes(n_ff) : ggml_row_size((ggml_type) d_type, n_ff);
+    f.d_tail = trim ? (int) (n_ff % 256) : 0;
     f.up_off = f.gu_row * (size_t) n_ff;
     f.down_off = 2 * f.up_off;
     f.bytes = f.down_off + f.d_row * (size_t) n_embd;
     f.act_bytes = ggml_row_size(tg->vec_dot_type, n_embd);
-    f.h_bytes = ggml_row_size(td->vec_dot_type, n_ff);
+    f.h_bytes = ggml_row_size(td->vec_dot_type, trim ? (n_ff + 255) / 256 * 256 : n_ff);
     if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
         err = "native experts: activation larger than the pool's buffers";
         return false;
@@ -73,6 +88,15 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+    if (f.d_tail) {   // Q8_K wants whole 256-value blocks: h, then zeros (they meet the half block's zero scales)
+        const int64_t n = (f.n_ff + 255) / 256 * 256;
+        float pad[1024];   // native_fmt admits h_bytes <= kNativeHBytes, i.e. at most 3 Q8_K blocks: n <= 768
+        if (n > (int64_t) (sizeof pad / sizeof pad[0])) std::abort();
+        std::memcpy(pad, h, (size_t) f.n_ff * sizeof(float));
+        std::memset(pad + f.n_ff, 0, (size_t) (n - f.n_ff) * sizeof(float));
+        traits(f.d_act)->from_float(pad, dst, n);
+        return;
+    }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
 }
 
@@ -138,6 +162,29 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
         return;
     }
     const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;
+    if (f.d_tail) {
+        // trimmed Q2_K: ggml's dot over the whole blocks, then over the half block rebuilt as a whole one whose other
+        // half has zero scales, mins and codes (it contributes exactly 0, as the padding did against zero activations)
+        const int full = (int) (f.n_ff / 256) * 256;
+        const size_t full_bytes = (size_t) full / 256 * kQ2KBlock;
+        const size_t q8k = ggml_row_size(GGML_TYPE_Q8_K, 256);
+        alignas(32) uint8_t blk[kQ2KBlock];
+        std::memset(blk, 0, sizeof blk);
+        for (int r = r0; r < r1; ++r) {
+            const uint8_t* dr = blob + f.down_off + (size_t) r * f.d_row;
+            const uint8_t* tail = dr + full_bytes;
+            std::memcpy(blk + 0, tail + 0, 8);      // scales of sub-blocks 0..7
+            std::memcpy(blk + 16, tail + 8, 32);    // codes of values 0..127
+            std::memcpy(blk + 80, tail + 40, 4);    // d, dmin
+            for (int t = 0; t < nt; ++t) {
+                float s = 0.f, s2 = 0.f;
+                if (full) dot(full, &s, 0, dr, 0, hq[t], 0, 1);
+                dot(256, &s2, 0, blk, 0, (const uint8_t*) hq[t] + (size_t) full / 256 * q8k, 0, 1);
+                out[t][r] = s + s2;
+            }
+        }
+        return;
+    }
     const int n = (int) f.n_ff;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* dr = blob + f.down_off + (size_t) r * f.d_row;
