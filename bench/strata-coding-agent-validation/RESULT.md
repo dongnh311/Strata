@@ -32,9 +32,21 @@ prints a cosmetic `[claude-code:unrecognized_model]` warning and proceeds.
 
 _pending_
 
-## Dimension 2 — Agentic tool use
+## Dimension 2 — Agentic tool use: **3/3 complete, tool protocol reliable** (2026-10-03)
 
-_pending_
+Longer multi-step, multi-file tasks through Claude Code's own tools (`run_agentic.py`), each verified by an
+automated check:
+
+| Task | Result | Turns | Claude Code error |
+| :--- | :--- | --: | :--- |
+| cli-json-flag (add a `--json` flag, keep default behaviour) | ✅ done | 7 | false |
+| rust-bug-multifile (fix a cross-file bug, `cargo test`) | ✅ done | 4 | false |
+| py-rename-refactor (rename a function + every caller) | ✅ done | 11 | false |
+
+All three finished the job and the check passed. Across all 11 agent sessions (Dimensions 2 + 3), Claude Code
+reported `is_error: false` with no malformed-tool-call failures and no permission denials — the Anthropic tool-use
+protocol (tool_use / tool_result round-trips, multi-turn) holds against Strata, including an 11-turn session. No
+looping or runaway turn counts were seen.
 
 ## Dimension 3 — Code correctness: **7/8 pass** (2026-10-03)
 
