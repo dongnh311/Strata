@@ -93,7 +93,9 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+// a key entered after the page loaded: the boot-time GET /mcp was refused, so fetch the tools again (else the chat
+// never offers them - strata_mcp is only sent when tools were listed)
+$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); loadMcp(); };
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
