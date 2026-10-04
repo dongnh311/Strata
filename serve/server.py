@@ -6,7 +6,8 @@
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
 non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
-ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
+ask for them with `"strata_mcp": true` or the header `X-Strata-MCP: 1` - the web app does; other clients see exactly
+the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
@@ -2021,7 +2022,22 @@ def structured_chunks(chunks, validator):
 
 
 # ------------------------------------------------------------------------------------------------ Anthropic
-def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel):
+def mcp_note(x: dict) -> str:
+    """run_with_mcp's tool activity as a line of thinking text: the Anthropic API has no field for a tool the server
+    ran itself, and a client like Claude Code shows thinking, so the user sees what was searched."""
+    if x.get("event") == "call":
+        args = json.dumps(x.get("arguments") or {}, ensure_ascii=False)
+        return f"\n[{x['name']} {args[:300]}{'...' if len(args) > 300 else ''}]\n"
+    if x.get("event") == "result" and not x.get("skipped"):
+        return f"[{'ok' if x['ok'] else 'failed'}: {x['chars']:,} characters in {x['ms'] / 1000:.1f} s]\n"
+    if x.get("event") == "limit":
+        return f"[tool limit reached: {x['max_rounds']} rounds]\n"
+    return ""
+
+
+def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None):
+    """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become thinking
+    text (mcp_note), and the tools it ran never appear as tool_use blocks - the client only answers its own."""
     mid = "msg_" + uuid.uuid4().hex[:24]
     yield "message_start", {"type": "message_start", "message": {
         "id": mid, "type": "message", "role": "assistant", "model": svc.model_for(req), "content": [],
@@ -2032,9 +2048,24 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
-    for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
+    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
             yield None
+            continue
+        if kind == "mcp":
+            note = mcp_note(x)
+            if not note:
+                yield None
+                continue
+            if open_kind != "thinking":
+                if open_kind is not None:
+                    yield close()
+                index += 1
+                open_kind = "thinking"
+                yield "content_block_start", {"type": "content_block_start", "index": index,
+                                              "content_block": {"type": "thinking", "thinking": "", "signature": ""}}
+            yield "content_block_delta", {"type": "content_block_delta", "index": index,
+                                          "delta": {"type": "thinking_delta", "thinking": note}}
             continue
         if kind == "event":
             ev: Event = x
@@ -2486,6 +2517,13 @@ def make_handler(svc: Service):
                 props["build_info"] = "Strata " + str(version)
             self._json(200, props)
 
+        def _wants_mcp(self, req) -> bool:
+            """The request asks for this server's MCP tools: "strata_mcp": true in the body (the web app), or the header
+            X-Strata-MCP: 1 for a client that cannot add a body field (Claude Code: ANTHROPIC_CUSTOM_HEADERS; Codex: the
+            provider's http_headers).  Same checks either way (_own_page, the API key)."""
+            return req.get("strata_mcp") is True or \
+                self.headers.get("X-Strata-MCP", "").strip().lower() in ("1", "true", "yes", "on")
+
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
             server never grants) and no foreign Origin: a web page elsewhere must not change settings or run tools."""
@@ -2565,11 +2603,11 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
             messages, validator = prepare_format(req.get("response_format"), messages)
-            if validator is not None and (tools or req.get("strata_mcp")):
+            if validator is not None and (tools or self._wants_mcp(req)):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
-            use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
+            use_mcp = self._wants_mcp(req) and svc.mcp is not None               # opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or []}
             if use_mcp:
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
@@ -2630,13 +2668,25 @@ def make_handler(svc: Service):
             svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
-            max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
+            max_req = max_new = int(req.get("max_tokens") or 0)        # 0/-1: the rest of the context
+            use_mcp = self._wants_mcp(req) and svc.mcp is not None     # as in _openai: the server runs these tools
+            own, extra = {t.get("name") for t in tools or []}, []
+            if use_mcp:
+                if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
+                    return
+                svc.mcp.wait(10)
+                extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
+                use_mcp = bool(extra)
+                tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
-            events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel)
+            offered = {t["name"] for t in extra} if use_mcp else set()
+            run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel, offered,
+                               mcp_aliases(svc.mcp.routes(), offered, own)) if use_mcp else None
+            events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, run=run)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
                 return self._json(200, anthropic_collect(events))

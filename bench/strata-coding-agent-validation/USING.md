@@ -53,6 +53,10 @@ new tokens in 1–2 s and decode at ~37 tok/s. So:
 
 ## Good to know
 
+- **Web search works.** The launchers send `X-Strata-MCP: 1` (`ANTHROPIC_CUSTOM_HEADERS` for Claude Code,
+  `http_headers` for Codex). The server then runs its MCP tools (the AI-Gateway's `web_search`, `fetch_url`, ...) itself.
+  Claude Code's own WebSearch tool goes through them, and the search shows as a thinking line. Tested: "latest stable
+  Rust" was answered from a real search with the source URL.
 - **Recall is reliable to at least 437K tokens** (tested 3/3 at 156K/312K/437K) — using facts from early in a big
   context is solid, well past the model's 262K trained length.
 - **Uncensored.** The refusal-projection vector is on; the model declines far less. Read shell commands it proposes

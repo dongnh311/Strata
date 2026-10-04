@@ -676,9 +676,16 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   (the same tool on two servers), a tool the request brought itself, or nothing is not guessed: the call ends the turn
   as an ordinary tool call for the client. Measured on an RTX 3060 PC (Q2_0, 256K context, 10 web-research questions
   in the chat page's request form): 3 of 10 answers stopped on a bare `web_search` before this, 0 of 10 after.
-- Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
-  before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
-  gets `strata_mcp` tool events in the stream).
+- By default only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API
+  exactly as before and keep their own tools. A request opts in with `"strata_mcp": true` in the body or the header
+  `X-Strata-MCP: 1` (for a client that cannot add a body field), on `/v1/chat/completions` (it then gets
+  `strata_mcp` tool events in the stream) and on `/v1/messages`. On `/v1/messages` the server's tool calls are not
+  `tool_use` blocks, since the client did not offer them: they show as a line of thinking text (`[gateway__web_search
+  {"query": ...}]`, then `[ok: 2,278 characters in 6.5 s]`), and only the request's own tools go back to the client.
+  Claude Code opts in with `ANTHROPIC_CUSTOM_HEADERS="X-Strata-MCP: 1"`. Its built-in WebSearch then works through
+  the server's search tool: measured with Claude Code 2.1.286 on the RTX 3060 PC (Q2_K refusal model, an MCP web
+  gateway), asking for the latest stable Rust release, the answer came from `web_search` + `fetch_url` in 4 turns,
+  with the release blog URL. Codex sets the header with `http_headers` in its model provider.
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders

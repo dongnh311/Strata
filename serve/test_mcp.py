@@ -333,6 +333,80 @@ class ToolLoop(unittest.TestCase):
             self.post(req)
             self.assertNotIn("fake__echo", self.engine.prompt_text(-1))
 
+    def test_the_header_opts_in(self):
+        """X-Strata-MCP: 1 - for a client that cannot add a body field (Codex's http_headers)."""
+        self.start(call_script("fake__echo", text="hi"), "</think>\n\nIt said hi.")
+        code, text = self.post({}, {"X-Strata-MCP": "1"})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"])
+
+    def test_another_header_value_does_not(self):
+        self.start(call_script("fake__echo", text="x"), "</think>\n\nnever")
+        self.post({}, {"X-Strata-MCP": "0"})
+        self.assertNotIn("fake__echo", self.engine.prompt_text(0))
+
+    # Claude Code: /v1/messages, opted in by the header (ANTHROPIC_CUSTOM_HEADERS)
+    def post_anthropic(self, body, headers=None, stream=True):
+        body = {"model": "m", "max_tokens": 256, "messages": [{"role": "user", "content": "check it"}],
+                "stream": stream, **body}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.read().decode()
+
+    def test_anthropic_tool_call_then_answer(self):
+        self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
+        code, text = self.post_anthropic({}, {"X-Strata-MCP": "1"})
+        self.assertEqual(code, 200, text)
+        events = self.chunks(text)
+        blocks = [e["content_block"]["type"] for e in events if e["type"] == "content_block_start"]
+        self.assertNotIn("tool_use", blocks)                          # nothing for the client to run
+        thinking = "".join(e["delta"].get("thinking", "") for e in events if e["type"] == "content_block_delta")
+        self.assertIn('[fake__echo {"text": "hello from the tool"}]', thinking)   # the user sees what ran
+        self.assertIn("[ok: 19 characters in", thinking)
+        text_out = "".join(e["delta"].get("text", "") for e in events if e["type"] == "content_block_delta")
+        self.assertEqual(text_out, "Let me check.The tool said hello.")
+        starts = [e["index"] for e in events if e["type"] == "content_block_start"]
+        stops = [e["index"] for e in events if e["type"] == "content_block_stop"]
+        self.assertEqual(starts, stops)                               # every block opened is closed, in order
+        self.assertEqual(starts, list(range(len(starts))))
+        self.assertEqual([e for e in events if e["type"] == "message_delta"][0]["delta"]["stop_reason"], "end_turn")
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("<tool_response>\nhello from the tool\n</tool_response>", self.engine.prompt_text(1))
+
+    def test_anthropic_non_stream(self):
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\n5.")
+        code, text = self.post_anthropic({"strata_mcp": True}, stream=False)
+        self.assertEqual(code, 200, text)
+        msg = json.loads(text)
+        self.assertEqual("".join(b.get("text", "") for b in msg["content"] if b["type"] == "text"), "Let me check.5.")
+        self.assertEqual(msg["stop_reason"], "end_turn")
+
+    def test_anthropic_own_tools_still_go_to_the_client(self):
+        own = [{"name": "Read", "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}}}]
+        self.start(call_script("Read", file_path="a.py"), "</think>\n\nnever")
+        code, text = self.post_anthropic({"tools": own}, {"X-Strata-MCP": "1"})
+        self.assertEqual(code, 200, text)
+        events = self.chunks(text)
+        uses = [e["content_block"] for e in events if e["type"] == "content_block_start"
+                and e["content_block"]["type"] == "tool_use"]
+        self.assertEqual([u["name"] for u in uses], ["Read"])
+        self.assertEqual([e for e in events if e["type"] == "message_delta"][0]["delta"]["stop_reason"], "tool_use")
+        self.assertIn('"name": "fake__echo"', self.engine.prompt_text(0))
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_anthropic_plain_requests_get_no_mcp_tools(self):
+        self.start(call_script("fake__echo", text="x"), "</think>\n\nnever")
+        code, text = self.post_anthropic({})
+        self.assertEqual(code, 200, text)
+        self.assertNotIn("fake__echo", self.engine.prompt_text(0))
+        self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
+
     def test_own_tools_still_go_to_the_client(self):
         own = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {
             "q": {"type": "string"}}}}}]
