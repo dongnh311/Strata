@@ -158,7 +158,9 @@ async function poll() {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
       setPill("error", "API key needed");
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
+      // long and with a button: a 6 s toast was easy to miss, and without the key the whole page looks dead
+      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 60000,
+                                                {label: "Add key", run: () => { showTab("about"); $("api-key").focus(); }}); }
     } else if (r.ok) {
       lastMetrics = await r.json();
       metricsFailures = 0;
