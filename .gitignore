@@ -52,3 +52,5 @@ build-vision.bat
 
 /.rocm-win/
 /code-strata.bat
+/remote-client/
+/allow-lan-firewall.bat

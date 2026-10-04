@@ -18,6 +18,22 @@ Validated GO — see `RESULT.md`. This is how to drive it day to day and how to 
 Normal Claude Code permissions apply (it was not built to skip them). The profile lives at
 `D:\GitHub\Strata-data\cc-strata`, separate from your real Claude Code, so histories don't mix.
 
+## From another machine (Claude Code or Codex over Tailscale / LAN)
+
+You can run the agent on a different PC and use this one as the server. The server now binds
+`0.0.0.0` and **requires an API key** (AGENTS.md forbids exposing it beyond loopback without one) —
+`"host"` and `"api_key"` are set in `strata-unc48l-q2ktrim-refusal.json`.
+
+- **Tailscale (recommended):** endpoint `https://pc-dik-win.tail1b3f7b.ts.net:8443` (real TLS cert, works
+  anywhere on the tailnet, no firewall change — `tailscale serve` already proxies it to `127.0.0.1:18080`).
+- **LAN:** endpoint `http://172.16.14.244:18080`; run `allow-lan-firewall.bat` on this PC once to open TCP 18080.
+
+Ready-to-copy client launchers (Claude Code **and** Codex, Windows `.bat` + `.sh`) are in `remote-client/`
+with their own `README.md`; they carry the key and the endpoints, so that folder is git-ignored. Codex uses
+Strata's OpenAI chat-completions API (`wire_api = "chat"`; the Responses API is not supported). Both protocols
+were verified end-to-end against the Tailscale endpoint with the key. The local launcher `code-strata.bat` was
+updated to send the key too.
+
 ## Keep it fast — the one thing that matters
 
 The slow part is the **first cold load of a large context** (≈4 min at 156K tokens, ≈10 min at 312K, ≈16 min near
