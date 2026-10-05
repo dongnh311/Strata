@@ -34,29 +34,37 @@ Strata's OpenAI chat-completions API (`wire_api = "chat"`; the Responses API is 
 were verified end-to-end against the Tailscale endpoint with the key. The local launcher `code-strata.bat` was
 updated to send the key too.
 
-## Don't use Claude Code's auto mode with Strata
+## One conversation at a time: no parallel subagents
 
-Auto mode checks every action that needs approval with a **separate request to the same model**: its own system prompt
-("security monitor for autonomous AI coding agents", ~144,000 characters), no tools, 5 or more calls per action. Strata
-keeps one conversation warm at a time, so each of those calls pushes your real conversation out of the cache, and the
-next turn re-reads it from token 0. Measured on a real session (RTX 3060, 09:00-09:18, a 36K-72K-token conversation):
+Strata keeps **one conversation warm** and serves one request at a time. Anything that sends it a *different*
+conversation pushes yours out of the cache, and your next turn re-reads it from token 0 (64 s at 43K tokens, 108 s at
+72K, about 5 min at 200K). Claude Code creates other conversations in three ways: **parallel subagents** (the `Agent` and
+`Workflow` tools), a second session at the same time, and - in auto mode only - the safety classifier.
+
+Measured on a real session (RTX 3060, 09:00-09:18, a 36K-72K-token conversation; the model had opened 3 parallel
+subagents, which share a 21,226-token system prefix and arrive as several near-identical requests):
 
 | | |
 | :-- | :-- |
 | Server busy | 17.6 min for 36 requests |
-| Classifier-like side requests | 13 requests = 328 s |
-| Main conversation re-read from scratch | 3 times = 234 s (64 s at 43K tokens, 108 s at 72K) |
+| Side-conversation requests (subagents) | 13 requests = 328 s |
+| Main conversation re-read from scratch | 3 times = 234 s |
 | **Avoidable** | **580 s = 55% of the server's busy time** |
 | A normal warm turn of the main conversation | 21.8 s on average |
 
-One approval of a single action cost about 4.4 minutes (146 s of classifier calls + a 118 s re-read). The same classifier
-timing out is what shows as "the safety classifier is temporarily down" and blocks every Bash and Write.
+While the subagents run, the main conversation does not move at all (here no turn from 09:14 until they finished, with 5
+requests queued). On a server that does one thing at a time, parallel subagents are slower than doing the same work in
+the main conversation, where every follow-up turn is cached.
 
-The launchers start Claude Code with `--permission-mode acceptEdits` (file edits go through; shell commands ask you,
-which costs your attention but no server time). Pick the mode that fits:
-- `acceptEdits` (the launcher default): you approve shell commands; choose "don't ask again" for the ones you trust.
-- `--dangerously-skip-permissions`: no prompts at all (see the notes below on what that risks with this model).
-- Avoid `--permission-mode auto`, and pressing Shift+Tab into it.
+The launchers therefore start Claude Code with `--disallowedTools "Agent,Workflow"`, which removes both tools from
+what the model is offered (checked: 23 tools become 21). The flag takes a list, so it goes **last** on the command line:
+written before a prompt it would swallow it. Remove it if you want subagents anyway.
+
+Auto mode is a separate way to hit the same wall, tested in the lab but not seen in the measured session above (that one
+ran in bypass mode): for each action that needs approval Claude Code sends 5 or more requests with its own
+"security monitor" system prompt (about 144,000 characters, no tools) to the same model. Bypass mode
+(`--dangerously-skip-permissions`) and `acceptEdits` sent none for the same risky command. If you use auto mode with
+Strata, expect each approval to cost a cold re-read.
 
 ## Keep it fast — the one thing that matters
 
