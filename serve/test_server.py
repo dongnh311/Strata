@@ -241,6 +241,78 @@ class ImageMarkers(unittest.TestCase):
             svc.embeddings.path.unlink(missing_ok=True)
 
 
+class ToolResultImages(unittest.TestCase):
+    """An image in a tool result (Claude Code's Read tool on a screenshot is {"type": "tool_result", "content":
+    [{"type": "image", ...}]}) must reach the model.  anthropic_to_messages kept only the text of a tool result, so the
+    model got an empty result and described a picture it had never seen (it answered "GLIMMER, a green circle" for
+    a picture of "MEN WALK ON MOON" and a red square)."""
+
+    PNG = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+
+    def convert(self, content):
+        from serve.frontend import anthropic_to_messages
+        req = {"model": "m", "max_tokens": 10, "messages": [
+            {"role": "user", "content": "look at shot.png"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                               "input": {"file_path": "shot.png"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": content}]}]}
+        return anthropic_to_messages(req)[0]
+
+    def test_the_image_stays_in_the_tool_message(self):
+        msgs = self.convert([self.PNG])
+        tool = [m for m in msgs if m["role"] == "tool"]
+        self.assertEqual(len(tool), 1)
+        self.assertEqual([i["type"] for i in tool[0]["content"]], ["image"])
+        self.assertTrue(tool[0]["content"][0]["source"].startswith("data:image/png;base64,iVBOR"))
+
+    def test_text_and_image_keep_their_order(self):
+        msgs = self.convert([{"type": "text", "text": "before"}, self.PNG, {"type": "text", "text": "after"}])
+        tool = [m for m in msgs if m["role"] == "tool"][0]
+        self.assertEqual([i["type"] for i in tool["content"]], ["text", "image", "text"])
+
+    def test_a_tool_result_without_an_image_is_still_a_string(self):
+        for content in ("plain", [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}], None):
+            with self.subTest(content=content):
+                tool = [m for m in self.convert(content) if m["role"] == "tool"][0]
+                self.assertIsInstance(tool["content"], str)
+        self.assertEqual([m for m in self.convert([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
+                          if m["role"] == "tool"][0]["content"], "ab")
+
+    def test_an_image_next_to_a_tool_result_is_kept(self):
+        from serve.frontend import anthropic_to_messages
+        req = {"model": "m", "max_tokens": 10, "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                                         {"type": "text", "text": "and this one"}, self.PNG]}]}
+        msgs = anthropic_to_messages(req)[0]
+        self.assertEqual(msgs[-1]["role"], "user")
+        self.assertEqual([i["type"] for i in msgs[-1]["content"]], ["text", "image"])
+
+    def prepare(self, vision, content):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                      vision=vision)
+        return tok, svc, svc.prepare(self.convert(content), None, {})[0]
+
+    def test_the_prompt_carries_the_image_inside_the_tool_response(self):
+        import tempfile
+        pad_tok = ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]
+        with tempfile.TemporaryDirectory() as d:
+            tok, svc, ids = self.prepare(ImageMarkers.FakeVision(d), [self.PNG])
+            self.assertEqual(ids.count(pad_tok), 3)              # the image's three rows
+            text = tok.decode(ids)
+            self.assertLess(text.index("<tool_response>"), text.index("<|vision_start|>"))
+            self.assertLess(text.index("<|vision_start|>"), text.index("</tool_response>"))
+            svc.embeddings.path.unlink(missing_ok=True)
+
+    def test_a_server_without_the_encoder_says_so_instead_of_failing(self):
+        tok, svc, ids = self.prepare(None, [{"type": "text", "text": "x"}, self.PNG])
+        text = tok.decode(ids)
+        self.assertIn("cannot read images", text)               # the model is told, and does not invent the picture
+        self.assertNotIn("<|image_pad|>", text)
+
+
 class StatusNeedsTheKey(unittest.TestCase):
     """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
 

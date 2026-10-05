@@ -54,3 +54,5 @@ build-vision.bat
 /code-strata.bat
 /remote-client/
 /allow-lan-firewall.bat
+
+/expert-profile-learned*.bin

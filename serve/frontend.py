@@ -128,6 +128,23 @@ def _parts_of(content):
     return items
 
 
+NO_VISION_NOTE = "[an image was returned here, but this server cannot read images, so you cannot see it]"
+
+
+def drop_tool_images(messages: list[dict]) -> list[dict]:
+    """For a server without the image encoder: an image in a tool result (Claude Code reading a screenshot) becomes a
+    note, so the model knows it saw nothing instead of inventing a picture, and the whole conversation does not fail
+    with "cannot read images" on every later turn while that result stays in it.  Images in user messages are left
+    alone: there the refusal is the answer."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if m.get("role") == "tool" and isinstance(c, list):
+            m = {**m, "content": "".join(i.get("text", "") if i.get("type") != "image" else NO_VISION_NOTE for i in c)}
+        out.append(m)
+    return out
+
+
 def images_of(messages: list[dict]) -> list[str]:
     """The image sources of the rendered conversation, in prompt order (the template renders one
     <|vision_start|><|image_pad|><|vision_end|> per image item, message by message)."""
@@ -214,7 +231,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
-        text, reasoning, calls = [], [], []
+        text, reasoning, calls, images = [], [], [], []
         for block in content or []:
             kind = block.get("type")
             if kind == "text":
@@ -224,9 +241,14 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "tool_use":
                 calls.append({"function": {"name": block.get("name"), "arguments": block.get("input") or {}}})
             elif kind == "tool_result":
-                messages.append({"role": "tool", "content": _text_of(block.get("content"))})
-        if text or calls or reasoning:
-            out = {"role": m["role"], "content": "".join(text)}
+                # a picture in the result (Claude Code's Read on a screenshot) stays in it: _parts_of keeps a string
+                # when there is none, and the list form - text and image items in order - when there is
+                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+            elif kind in IMAGE_PARTS:
+                images.append(block)                    # an image beside tool results in the same user turn
+        if text or calls or reasoning or images:
+            parts = ([{"type": "text", "text": "".join(text)}] if text else []) + images
+            out = {"role": m["role"], "content": _parts_of(parts) if images else "".join(text)}
             if reasoning:
                 out["reasoning_content"] = "".join(reasoning)
             if calls:
