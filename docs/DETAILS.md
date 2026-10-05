@@ -800,6 +800,12 @@ print(r.choices[0].message.content)
 
 **Anthropic API:** an `image` block with a `base64` (or `url`) source, as usual.
 
+A picture inside a **tool result** counts too (Claude Code's Read tool on a screenshot sends the image in the
+`tool_result`): it is encoded and placed inside the `<tool_response>`. Before commit 8775752 only the text of a
+tool result was kept, so the model got an empty result and described a picture it had never seen. On a server started
+without the image encoder, a tool's picture becomes the note "an image was returned here, but this server cannot
+read images" instead of failing the request.
+
 JPEG, PNG, BMP, GIF, WebP, TIFF and AVIF work (the last ones are converted to PNG first; agents such as omp send
 WebP). Chat apps with image upload work the same way.
 

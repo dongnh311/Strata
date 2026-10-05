@@ -66,6 +66,21 @@ ran in bypass mode): for each action that needs approval Claude Code sends 5 or 
 (`--dangerously-skip-permissions`) and `acceptEdits` sent none for the same risky command. If you use auto mode with
 Strata, expect each approval to cost a cold re-read.
 
+## Images (screenshots)
+
+The server reads images (`"images": true` in `/health`, "images on" at start): attach one in the web chat (reload the
+page once; the paperclip says "Attach a text file or a picture"), or let Claude Code open one with its Read tool
+(`Read shot.png`). Measured on the RTX 3060 PC with the Q2_K refusal model: a 1280x720 screenshot of code at 22 px was
+quoted exactly (a comment, a TypeError message, `checkout.py:42`) and the model then explained the bug; a picture of
+"MEN WALK ON MOON" with a red square and a blue circle was described correctly through the OpenAI and Anthropic APIs
+and through Claude Code's Read.
+
+It costs **4.3 s per new picture** (the same picture again is free) and about **1 GB of RAM** for the encoder
+(`strata-vision.exe`, on the CPU with 4 threads, pictures scaled to ~300 tokens); the GPU is not touched, and text speed
+did not change (a cold 17.5K-token prompt: prefill 705-717 tok/s, decode 43-46 tok/s, against 676-686 and 37-44 before).
+The config's `vision` section points `model` at the Q2_0 original, not the unc48L file: llama.cpp cannot read the
+trimmed Q2_K file (rows of 640 values) and the helper only needs the vocabulary and the embedding width.
+
 ## Keep it fast — the one thing that matters
 
 The slow part is the **first cold load of a large context** (≈4 min at 156K tokens, ≈10 min at 312K, ≈16 min near
