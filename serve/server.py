@@ -1584,6 +1584,14 @@ class Service:
                             trace["queue_s"] += round(time.perf_counter() - waiting, 3)
                             trace["state"] = "generating"
                         self.status["queued"] -= 1
+                    if cancel.is_set():
+                        # the client hung up while this waited its turn (a retry, a closed window, Esc): the engine
+                        # would still read two prompt chunks (17 s at 6,144 tokens each on an RTX 3060) before it
+                        # looks at the cancel, and with a deep queue of abandoned requests that was a third of the
+                        # server's time.  Nothing was read or generated, so there is no history entry either.
+                        print("[strata] dropped a request whose client left while it waited in the queue", flush=True)
+                        yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None}
+                        return
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
                     with self.status_lock:

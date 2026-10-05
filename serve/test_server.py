@@ -697,6 +697,77 @@ class ClientHangUp(unittest.TestCase):
         self.hang_up(True)
 
 
+class CountingEngine(MockEngine):
+    """Counts the requests the engine is actually asked to run."""
+
+    runs = 0
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        type(self).runs += 1
+        yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+
+
+class HangUpWhileQueued(unittest.TestCase):
+    """A client that hangs up while its request waits behind another one must not cost the engine anything.  It used
+    to: the request got its turn and the engine read two 6,144-token chunks of its prompt (17 s on the RTX 3060)
+    before the cancel was seen, which with a deep queue of retried requests was a third of the server's time."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = CountingEngine(tok, "</think>\n\nOK", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.port = cls.httpd.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def send(self, stream):
+        import socket as so
+        body = json.dumps({"model": "x", "max_tokens": 20, "stream": stream,
+                           "messages": [{"role": "user", "content": "queued behind another request"}]}).encode()
+        c = so.create_connection(("127.0.0.1", self.port))
+        c.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                  b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        return c
+
+    def wait(self, cond, what, timeout=10):
+        t0 = time.monotonic()
+        while not cond() and time.monotonic() - t0 < timeout:
+            time.sleep(0.05)
+        self.assertTrue(cond(), what)
+
+    def hang_up_while_queued(self, stream):
+        type(self.engine).runs = 0
+        self.svc.fifo.acquire()                        # another request is running
+        try:
+            c = self.send(stream)
+            self.wait(lambda: self.svc.status["queued"] == 1, "the request did not queue")
+            c.close()                                  # the client gives up while it waits
+            time.sleep(1.5)                            # the server notices a hang-up within about a second
+        finally:
+            self.svc.fifo.release()
+        self.wait(lambda: self.svc.status["queued"] == 0, "the queue did not drain")
+        time.sleep(0.5)
+        self.assertEqual(self.engine.runs, 0, "the engine ran a request whose client had already left")
+        self.assertFalse(self.svc.status.get("busy"))
+        with urllib.request.urlopen(urllib.request.Request(          # the next, live request is served as usual
+                f"http://127.0.0.1:{self.port}/v1/chat/completions", headers={"Content-Type": "application/json"},
+                data=json.dumps({"model": "x", "max_tokens": 20, "messages": [
+                    {"role": "user", "content": "hi"}]}).encode()), timeout=20) as r:
+            self.assertEqual(r.status, 200)
+        self.assertEqual(self.engine.runs, 1)
+
+    def test_non_streamed(self):
+        self.hang_up_while_queued(False)
+
+    def test_streamed(self):
+        self.hang_up_while_queued(True)
+
+
 class EngineDeath(unittest.TestCase):
     """Issue #27: a dead engine is an error (not "length"), and the next request starts it again."""
 
