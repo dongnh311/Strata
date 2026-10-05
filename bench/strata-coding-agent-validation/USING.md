@@ -34,6 +34,30 @@ Strata's OpenAI chat-completions API (`wire_api = "chat"`; the Responses API is 
 were verified end-to-end against the Tailscale endpoint with the key. The local launcher `code-strata.bat` was
 updated to send the key too.
 
+## Don't use Claude Code's auto mode with Strata
+
+Auto mode checks every action that needs approval with a **separate request to the same model**: its own system prompt
+("security monitor for autonomous AI coding agents", ~144,000 characters), no tools, 5 or more calls per action. Strata
+keeps one conversation warm at a time, so each of those calls pushes your real conversation out of the cache, and the
+next turn re-reads it from token 0. Measured on a real session (RTX 3060, 09:00-09:18, a 36K-72K-token conversation):
+
+| | |
+| :-- | :-- |
+| Server busy | 17.6 min for 36 requests |
+| Classifier-like side requests | 13 requests = 328 s |
+| Main conversation re-read from scratch | 3 times = 234 s (64 s at 43K tokens, 108 s at 72K) |
+| **Avoidable** | **580 s = 55% of the server's busy time** |
+| A normal warm turn of the main conversation | 21.8 s on average |
+
+One approval of a single action cost about 4.4 minutes (146 s of classifier calls + a 118 s re-read). The same classifier
+timing out is what shows as "the safety classifier is temporarily down" and blocks every Bash and Write.
+
+The launchers start Claude Code with `--permission-mode acceptEdits` (file edits go through; shell commands ask you,
+which costs your attention but no server time). Pick the mode that fits:
+- `acceptEdits` (the launcher default): you approve shell commands; choose "don't ask again" for the ones you trust.
+- `--dangerously-skip-permissions`: no prompts at all (see the notes below on what that risks with this model).
+- Avoid `--permission-mode auto`, and pressing Shift+Tab into it.
+
 ## Keep it fast — the one thing that matters
 
 The slow part is the **first cold load of a large context** (≈4 min at 156K tokens, ≈10 min at 312K, ≈16 min near
