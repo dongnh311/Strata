@@ -58,6 +58,10 @@ bool cvec_enabled();
 void cvec_set_scale(float scale);
 float cvec_scale();
 
+/// The CURRENT device's tables (dir n_layers x n_embd, s n_layers, the strength multiplier: 0 = off), for a caller that applies the
+/// vector inside its own kernel (the prompt path's STRATA_CVEC_FUSE).  False without a vector on this device.
+bool cvec_tables(const float** dir, const float** s, const float** scale);
+
 /// Layer `layer`'s vector on T tokens' residual stacks (`R + t * r_ld`, hc streams of n_embd).  With `write`, the
 /// pending FFN write `R += bo * 2 sigmoid(inj / hc)` (the fused read's arithmetic) is applied first, for callers
 /// whose writes are folded into the next layer's read; without it, R must already hold the layer's output.

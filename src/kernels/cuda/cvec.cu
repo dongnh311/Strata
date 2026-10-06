@@ -167,6 +167,14 @@ void cvec_set_scale(float scale) {
 
 float cvec_scale() { return g_scale_host; }
 
+bool cvec_tables(const float** dir, const float** s, const float** scale) {
+    if (!g_cvec.loaded()) return false;
+    const DevTables& t = g_dev[cur_device()];
+    if (t.dir == nullptr) return false;
+    *dir = t.dir; *s = t.s; *scale = t.scale;
+    return true;
+}
+
 void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* bo, int64_t bo_ld, const float* inj,
                 int64_t inj_ld, bool write, void* stream) {
     if (!g_cvec.loaded() || T < 1) return;
