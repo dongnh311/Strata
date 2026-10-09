@@ -198,6 +198,9 @@
         <button type="button" role="radio" data-v="medium">Medium</button><button type="button" role="radio" data-v="high">High</button>
       </div>
     </div>
+    <div class="toggle-row"><span>Thinking - mọi app<br><span class="muted small">tắt = không suy nghĩ cho tất cả: chat này,
+      Claude Code, AI-Gateway, máy Mac, API, kể cả khi app tự xin. Có tác dụng ngay, không cần Apply. Nhanh hơn nhưng code dễ sai hơn</span></span>
+      <button class="st-toggle" id="s-think-all" role="switch" aria-checked="true" aria-label="Thinking - mọi app"></button></div>
     <div class="st-field">
       <label class="st-label" for="s-temp">Temperature <output id="o-temp"></output></label>
       <input class="st-slider" type="range" id="s-temp" min="0" max="1.5" step="0.05">
@@ -224,9 +227,12 @@
     <div class="toggle-row" id="mcp-row" hidden><span>Use tools from MCP servers<br><span class="muted small"
       id="mcp-row-sub">the model may call them while it answers</span></span>
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers"></button></div>
-    <div class="toggle-row" id="esp-row" hidden><span>Bỏ kiểm duyệt (Uncensored)<br><span class="muted small">vector bỏ
-      kiểm duyệt của engine; tắt = model gốc. Bật/tắt sẽ đọc lại đoạn chat một lần</span></span>
-      <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Bỏ kiểm duyệt (Uncensored)"></button></div>
+    <div class="toggle-row" id="esp-row" hidden><span>Bỏ kiểm duyệt (Uncensored) - chat này<br><span class="muted small">vector bỏ
+      kiểm duyệt của engine, cho web chat này; tắt = model gốc. Bật/tắt sẽ đọc lại đoạn chat một lần</span></span>
+      <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Bỏ kiểm duyệt (Uncensored) - chat này"></button></div>
+    <div class="toggle-row" id="esp-all-row" hidden><span>Bỏ kiểm duyệt - app khác<br><span class="muted small">Claude Code,
+      AI-Gateway, máy Mac, API; có tác dụng ngay, không cần Apply. Code nên tắt (model gốc làm code tốt hơn)</span></span>
+      <button class="st-toggle" id="s-esp-all" role="switch" aria-checked="true" aria-label="Bỏ kiểm duyệt - app khác"></button></div>
     <div class="st-field" id="esp-scale-row" hidden>
       <label class="st-label" for="s-esp-scale">Cường độ bỏ kiểm duyệt <output id="o-esp-scale"></output></label>
       <input class="st-slider" type="range" id="s-esp-scale" min="0" max="1.5" step="0.05" value="1">

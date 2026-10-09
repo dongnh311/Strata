@@ -2544,11 +2544,22 @@ class Service:
         return self.shared
 
     def with_shared(self, req: dict, api: str) -> dict:
-        """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        """The request with the shared thinking level and max tokens filled in where it has none of its own.
+        `thinking_off` is not a default: it turns the thinking off for every request, whatever the request asks."""
         s = self.shared
         if not s:
             return req
         req = dict(req)
+        if s.get("thinking_off"):
+            if api == "openai":
+                req.pop("reasoning_effort", None)
+                req.pop("reasoning", None)
+                ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
+                req["chat_template_kwargs"] = {**{k: v for k, v in ctk.items() if k != "reasoning_effort"},
+                                               "enable_thinking": False}
+            else:
+                req["thinking"] = {"type": "disabled"}
+            req.pop("reasoning_budget_tokens", None)
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
         effort = s.get("reasoning_effort")
@@ -4814,7 +4825,7 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection",
-               "projection_scale")
+               "projection_scale", "thinking_off")
 
 
 def clean_shared_defaults(d) -> dict:
@@ -4852,6 +4863,11 @@ def clean_shared_defaults(d) -> dict:
             if not number or not 0 <= value <= 4:
                 raise ValueError("projection_scale: 0..4 (the control vector's strength; 1 = the loaded scale)")
             value = float(value)
+        elif key == "thinking_off":
+            if not isinstance(value, bool):
+                raise ValueError("thinking_off: true or false")
+            if not value:
+                continue                                     # false = the requests decide, as with no key at all
         else:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value

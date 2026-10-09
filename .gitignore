@@ -64,5 +64,7 @@ build-vision-cuda12.bat
 /code-strata.bat
 /remote-client/
 /allow-lan-firewall.bat
+/strata-vector.bat
+/strata-vector.ps1
 
 /expert-profile-learned*.bin

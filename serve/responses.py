@@ -331,6 +331,8 @@ def check_request(req: dict) -> None:
 
 
 def template_kwargs(req: dict, shared: dict) -> dict:
+    if shared.get("thinking_off"):                   # the web app's "thinking off for every app": not a default
+        return {"enable_thinking": False}
     effort = (req.get("reasoning") or {}).get("effort")
     if effort is None:
         effort = shared.get("reasoning_effort")      # the Chat settings shared with apps, as on the chat path

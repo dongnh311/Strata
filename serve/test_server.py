@@ -2212,6 +2212,30 @@ class SharedSettings(unittest.TestCase):
         self.assertEqual(self.svc.with_shared({"reasoning_effort": "high"}, "openai")["reasoning_effort"], "high")
         self.assertEqual(self.svc.with_shared({}, "anthropic")["output_config"], {"effort": "low"})
 
+    def test_thinking_off_wins_over_what_the_request_asks(self):
+        from serve.frontend import anthropic_to_messages, openai_to_messages
+        from serve.responses import template_kwargs
+        code, b = self.req("/settings", {"defaults": {"thinking_off": True, "reasoning_effort": "low"}})
+        self.assertEqual((code, b["defaults"]["thinking_off"]), (200, True))
+        msgs = [{"role": "user", "content": "hi"}]
+        for req in ({"messages": msgs}, {"messages": msgs, "reasoning_effort": "high"},
+                    {"messages": msgs, "reasoning": {"effort": "high"}},
+                    {"messages": msgs, "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "high"}}):
+            self.assertEqual(openai_to_messages(self.svc.with_shared(req, "openai"))[2], {"enable_thinking": False}, req)
+        for req in ({"messages": msgs}, {"messages": msgs, "thinking": {"type": "enabled", "budget_tokens": 31999}},
+                    {"messages": msgs, "output_config": {"effort": "high"}}):    # Claude Code's --effort high
+            self.assertEqual(anthropic_to_messages(self.svc.with_shared(req, "anthropic"), False)[2],
+                             {"enable_thinking": False}, req)
+        self.assertEqual(template_kwargs({"reasoning": {"effort": "high"}}, self.svc.shared), {"enable_thinking": False})
+        code, _ = self.chat(reasoning_effort="high")                 # the answer has no thinking in it
+        self.assertEqual(code, 200)
+        code, b = self.req("/settings", {"defaults": {"thinking_off": False}})   # false = no key: requests decide again
+        self.assertEqual((code, b["shared"]), (200, False))
+        self.assertEqual(self.svc.with_shared({"reasoning_effort": "high"}, "openai")["reasoning_effort"], "high")
+        code, b = self.req("/settings", {"defaults": {"thinking_off": "yes"}})
+        self.assertEqual(code, 400)
+        self.assertIn("thinking_off", b["error"]["message"])
+
     def test_off_again(self):
         self.req("/settings", {"defaults": {"temperature": 0.3}})
         code, b = self.req("/settings", {"defaults": None})

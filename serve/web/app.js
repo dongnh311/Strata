@@ -1013,34 +1013,85 @@ function loadDrawer(s = settings) {
   outputs();
 }
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
+// The vector keys belong to the "Bỏ kiểm duyệt - app khác" switch and thinking_off to "Thinking - mọi app": sharing
+// the sampling neither sets nor clears them.
 let sharedOn = false;
+const VEC_KEYS = ["experimental_speed_projection", "projection_scale", "thinking_off"];
+const vecPart = (d) => Object.fromEntries(Object.entries(d || {}).filter(([k]) => VEC_KEYS.includes(k)));
+async function serverShared() {
+  const r = await fetch("settings", {headers: headers()});
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()).defaults || {};
+}
+async function postShared(d) {
+  const w = await fetch("settings", {method: "POST", headers: headers(true),
+                                     body: JSON.stringify({defaults: Object.keys(d).length ? d : null})});
+  if (!w.ok) {
+    let msg = `HTTP ${w.status}`;
+    try { msg = (await w.json()).error.message || msg; } catch (e) { /* not json */ }
+    throw new Error(msg);
+  }
+  const d2 = (await w.json()).defaults || {};
+  sharedOn = Object.keys(d2).some((k) => !VEC_KEYS.includes(k));
+  return d2;
+}
 async function loadShared() {
+  let defaults = {};
   try {
-    const r = await fetch("settings", {headers: headers()});
-    if (r.ok) sharedOn = !!(await r.json()).shared;
+    defaults = await serverShared();
+    sharedOn = Object.keys(defaults).some((k) => !VEC_KEYS.includes(k));
   } catch (e) { /* an older server: the switch just stays off */ }
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  $("esp-all-row").hidden = !projectionLoaded();
+  $("s-esp-all").setAttribute("aria-checked", String(defaults.experimental_speed_projection !== false));
+  $("s-think-all").setAttribute("aria-checked", String(!defaults.thinking_off));
 }
+// "Thinking - mọi app": thinking_off in the shared settings turns the thinking off for every request, this chat's too
+$("s-think-all").onclick = async () => {
+  const sw = $("s-think-all"), on = sw.getAttribute("aria-checked") !== "true";
+  sw.disabled = true;
+  try {
+    const d = {...(await serverShared())};
+    if (on) delete d.thinking_off; else d.thinking_off = true;
+    const d2 = await postShared(d);
+    $("s-share").setAttribute("aria-checked", String(sharedOn));
+    sw.setAttribute("aria-checked", String(!d2.thinking_off));
+    toast("success", on ? "Thinking: BẬT cho mọi app" : "Thinking: TẮT cho mọi app",
+          on ? "Mỗi app lại tự chọn mức suy nghĩ của nó." : "Chat này, Claude Code, AI-Gateway, Mac trả lời không suy nghĩ từ request kế tiếp.");
+  } catch (e) {
+    toast("error", "Không đổi được", e.message, 6000);
+  } finally {
+    sw.disabled = false;
+  }
+};
+// "Bỏ kiểm duyệt - app khác": only the vector key of the shared settings, the others kept; applied at once
+$("s-esp-all").onclick = async () => {
+  const sw = $("s-esp-all"), on = sw.getAttribute("aria-checked") !== "true";
+  sw.disabled = true;
+  try {
+    const d = {...(await serverShared())};
+    if (on) { delete d.experimental_speed_projection; delete d.projection_scale; } else d.experimental_speed_projection = false;
+    const d2 = await postShared(d);
+    $("s-share").setAttribute("aria-checked", String(sharedOn));
+    sw.setAttribute("aria-checked", String(d2.experimental_speed_projection !== false));
+    toast("success", on ? "Bỏ kiểm duyệt: BẬT cho app khác" : "Bỏ kiểm duyệt: TẮT cho app khác",
+          "Claude Code, AI-Gateway, Mac dùng từ request kế tiếp (lượt đầu có thể đọc lại context).");
+  } catch (e) {
+    toast("error", "Không đổi được", e.message, 6000);
+  } finally {
+    sw.disabled = false;
+  }
+};
 function sharedDefaults(s) {
   const d = {reasoning_effort: s.thinking, temperature: +s.temperature};
   if (+s.temperature > 0) Object.assign(d, {top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
-  if (projectionLoaded()) {
-    d.experimental_speed_projection = s.esp !== false;
-    if (s.esp !== false && s.espScale != null) d.projection_scale = +s.espScale;
-  }
   return d;
 }
 async function saveShared(on, s) {
-  const r = await fetch("settings", {method: "POST", headers: headers(true),
-                                      body: JSON.stringify({defaults: on ? sharedDefaults(s) : null})});
-  if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-    throw new Error(msg);
-  }
-  sharedOn = !!(await r.json()).shared;
+  const vec = vecPart(await serverShared());          // keep the "app khác" vector choice as it is
+  await postShared(on ? {...sharedDefaults(s), ...vec} : vec);
 }
 // the engine was started with the experimental-speed-projection control vector (INFO cvec=...)
 function projectionLoaded() {
