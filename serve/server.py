@@ -148,6 +148,20 @@ REPEAT_STOP_TOKENS = 256
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
+
+
+def reasoning_budget_share_of(cfg: dict) -> float | None:
+    """The config's "reasoning_budget_share" (opt-in): the thinking may use at most this share of a request's
+    max_tokens before it is wrapped up as at reasoning_budget_tokens (#123), so a reply always keeps room to answer.
+    A fixed budget cannot do that when max_tokens is below it: Q2_0 on an RTX 3060 (2026-10-09) drafted a 600-word
+    story in its thinking and counted words until 5,000, 8,192 and 16,384 max tokens ran out, with no answer at all.
+    None when unset; ValueError unless it is a number between 0 and 1 (both excluded)."""
+    value = cfg.get("reasoning_budget_share")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
+        raise ValueError(f"\"reasoning_budget_share\" must be a number between 0 and 1 (e.g. 0.75), not {value!r}")
+    return float(value)
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
 # low-effort instruction in place of the xhigh one.  Both off by default.
@@ -2751,6 +2765,7 @@ class Service:
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+        self.reasoning_budget_share = None               # at most this share of max_tokens thinks (None: no cap)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
@@ -3553,6 +3568,11 @@ class Service:
             sampling = {**defaults, **req_values}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
+        own = (sampling or {}).get("reasoning_budget_tokens")
+        share_off = isinstance(own, (int, float)) and not isinstance(own, bool) and own <= 0   # a request's own 0
+        if thinking and self.reasoning_budget_share and not share_off:     # turns the share's cap off too
+            cap = max(1, int(max_new * self.reasoning_budget_share))
+            budget = min(budget, cap) if budget else cap
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, aliases=aliases,
                               recover=self.tool_call_recovery)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
@@ -3879,7 +3899,8 @@ class Service:
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
-                                      "strata-<model>.json for every request) leaves room to answer", flush=True)
+                                      "strata-<model>.json for every request; or reasoning_budget_share there) "
+                                      "leaves room to answer", flush=True)
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                         st["busy"] = False
@@ -6048,6 +6069,13 @@ def main() -> int:
         if budget:
             print(f"[strata] thinking budget: {budget} tokens (reasoning_budget_tokens; a request can set its own)",
                   flush=True)
+    try:
+        svc.reasoning_budget_share = reasoning_budget_share_of(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    if svc.reasoning_budget_share:
+        print(f"[strata] thinking may use at most {svc.reasoning_budget_share:.0%} of a reply's max tokens "
+              "(reasoning_budget_share)", flush=True)
     recovery = cfg.get("reasoning_loop_recovery", False)   # #728: false (default) | "stop" | "recover" (true)
     if recovery is True:
         recovery = "recover"

@@ -3498,6 +3498,41 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
         self.assertEqual(len(self.engine.prompts), 3)
 
+    def test_a_share_of_max_tokens_wraps_up_a_runaway(self):
+        """reasoning_budget_share: the thinking may use at most that share of the request's max_tokens, so a model
+        that deliberates without end (Q2_0 drafting a 600-word story in its thinking until max_tokens ran out, 3 of
+        3 tries) still leaves room to answer; a fixed budget alone cannot, when max_tokens is below it."""
+        self.svc.reasoning_budget_share = 0.05
+        code, b = self.openai()                                    # 400 x 0.05 = 20 tokens of thinking
+        self.assertEqual(code, 200, b)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
+        self.assertEqual(b["choices"][0]["message"]["content"], ThinkingEngine.ANSWER)
+        code, b = self.openai(reasoning_budget_tokens=10)          # a smaller budget of its own wins
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:10] + "\n"))
+        self.svc.reasoning_budget_tokens = 30                      # a larger config budget: the share is smaller
+        code, b = self.openai()
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
+        before = len(self.engine.prompts)
+        code, b = self.openai(reasoning_budget_tokens=0)           # the request's 0 turns both off
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), before + 1)
+
+    def test_a_share_the_thinking_stays_under(self):
+        self.svc.reasoning_budget_share = 0.9
+        code, b = self.openai()
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+        self.assertEqual(len(self.engine.prompts), 1)
+
+    def test_the_share_in_the_config(self):
+        from serve.server import reasoning_budget_share_of
+        self.assertIsNone(reasoning_budget_share_of({}))
+        self.assertIsNone(reasoning_budget_share_of({"reasoning_budget_share": None}))
+        self.assertEqual(reasoning_budget_share_of({"reasoning_budget_share": 0.75}), 0.75)
+        for bad in (0, 1, 1.5, -0.2, "0.5", True):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                reasoning_budget_share_of({"reasoning_budget_share": bad})
+
     def test_a_shared_budget_must_be_a_whole_number_of_tokens(self):
         for bad in (-1, 1.5, "20"):
             with self.assertRaises(ValueError, msg=repr(bad)):
