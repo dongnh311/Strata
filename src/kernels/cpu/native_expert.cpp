@@ -40,6 +40,20 @@ size_t q2k_trim_row_bytes(int64_t n) noexcept {
     return (size_t) (n / 256) * kQ2KBlock + (n % 256 ? kQ2KHalf : 0);
 }
 
+// The "is this format handled by that kernel" questions, answered here and not next to the kernels: iq_avx512.cpp is
+// compiled for AVX-512 and iq_avx2.cpp / kq_avx2.cpp for AVX2, and native_gu_rows asks these on every CPU before it
+// has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
+// answer that is only a comparison must not come from one (#795).
+bool iq512_supported(int type) noexcept {
+    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
+}
+
+bool iq256_supported(int type) noexcept {
+    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
+}
+
+bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
+
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
     const ggml_type_traits_cpu* tg = traits(gu_type);
@@ -83,7 +97,19 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     return true;
 }
 
+namespace {
+// Q8_K (the activations of every i-quant row): ggml-cpu's x86 quantizer is the scalar reference, ~3 us per token
+// and layer on the host before the pool can start; q8k_quant_avx2 writes the same bytes.  cpu_avx2_ok() too:
+// iq_avx2.cpp is compiled for AVX2 (an AVX-only CPU, or STRATA_FORCE_ISA=avx, keeps ggml's).  STRATA_NO_Q8K_AVX2=1:
+// ggml's on any CPU.
+bool q8k_avx2(int type) {
+    static const bool on = cpu_avx2_ok() && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
+    return on && type == (int) GGML_TYPE_Q8_K;
+}
+}  // namespace
+
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+    if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
 
@@ -94,9 +120,11 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         if (n > (int64_t) (sizeof pad / sizeof pad[0])) std::abort();
         std::memcpy(pad, h, (size_t) f.n_ff * sizeof(float));
         std::memset(pad + f.n_ff, 0, (size_t) (n - f.n_ff) * sizeof(float));
-        traits(f.d_act)->from_float(pad, dst, n);
+        if (q8k_avx2(f.d_act)) q8k_quant_avx2(pad, dst, n);
+        else traits(f.d_act)->from_float(pad, dst, n);
         return;
     }
+    if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
 }
 
