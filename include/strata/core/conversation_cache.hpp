@@ -199,9 +199,6 @@ public:
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
         : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
-    // Drop every parked conversation and any retained K/V (e.g. the control-vector strength changed, so the parked
-    // states were computed at a strength this request no longer uses).
-    void clear() { entries_.clear(); reuse_ = {}; bytes_ = 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
