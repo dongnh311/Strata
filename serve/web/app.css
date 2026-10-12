@@ -2,9 +2,12 @@
    shadows come only from the kit's tokens. */
 [hidden] { display: none !important; }
 html, body { height: 100%; }
+/* phones: the visible height, without the browser's address bar */
+@supports (height: 100dvh) { body { height: 100dvh; } }
 body { display: flex; flex-direction: column; overflow: hidden; }
-main { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+main { flex: 1; min-height: 0; min-width: 0; display: flex; }
+/* min-width 0: a long code line or a wide table must not widen the page past the screen (phones) */
+.view { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
@@ -14,16 +17,18 @@ main { flex: 1; min-height: 0; display: flex; }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .chat { max-width: 860px; margin: 0 auto; padding: var(--st-s-8) var(--st-s-6) var(--st-s-6); display: flex;
         flex-direction: column; gap: var(--st-s-6); }
 .chat-empty { margin: 12vh auto 0; text-align: center; }
 .chat-empty__title { font-weight: var(--st-fw-black); font-size: var(--st-fs-display); line-height: var(--st-lh-tight);
                      letter-spacing: -.02em; }
 .chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
-.st-msg { width: 100%; }
+.st-msg { width: 100%; max-width: min(720px, 100%); min-width: 0; }
 .st-msg--assistant { align-self: flex-start; }
-.st-msg--assistant .st-bubble { width: 100%; }
+.st-msg--assistant .st-bubble { width: 100%; min-width: 0; overflow-wrap: break-word; }
+.st-msg--user .st-bubble { max-width: 100%; }
+.st-msg__meta { flex-wrap: wrap; }
 .st-msg--user .st-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
 .st-bubble > :first-child { margin-top: 0; }
 .st-bubble > :last-child { margin-bottom: 0; }
@@ -38,10 +43,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble blockquote { margin: 0 0 var(--st-s-3); padding-left: var(--st-s-3); border-left: 3px solid var(--st-line);
                         color: var(--st-ink-muted); }
 .st-bubble hr { border: 0; border-top: 1px solid var(--st-line); margin: var(--st-s-4) 0; }
-.st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); }
+/* a wide table scrolls inside the answer instead of widening the page */
+.st-bubble table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 var(--st-s-3);
+                   font-size: var(--st-fs-md); }
 .st-bubble th, .st-bubble td { border: 1px solid var(--st-line); padding: 6px 10px; text-align: left; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
-.msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
+.msg-images img { max-width: min(220px, 100%); max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
 .st-msg .st-collapse { width: 100%; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
@@ -182,8 +189,21 @@ main { flex: 1; min-height: 0; display: flex; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
   #pill-text { display: none; }
-  .chat { padding: var(--st-s-5) var(--st-s-4); }
-  .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
+  .st-header__brand { display: none; }
+  .st-header .st-btn--icon { width: 32px; height: 32px; }
+  .chat { padding: var(--st-s-4) var(--st-s-3); gap: var(--st-s-4); }
+  .chat-empty__title { font-size: var(--st-fs-xl); }
+  .st-bubble { padding: 10px 12px; }
+  .st-bubble ul, .st-bubble ol { padding-left: var(--st-s-5); }
+  .composer-wrap { padding: 0 var(--st-s-2) max(var(--st-s-2), env(safe-area-inset-bottom)); }
+  .st-composer { padding: 8px; }
+  .st-composer__bar { gap: 2px; }
+  .st-composer textarea { max-height: 30dvh; }
+  /* 16px stops iOS from zooming in on a focused field (and leaving the page zoomed) */
+  .st-input, .st-composer textarea { font-size: 16px; }
+  /* under the header, so a toast does not cover the message box */
+  .st-toasts { left: var(--st-s-3); right: var(--st-s-3); top: 68px; bottom: auto; }
+  .st-toast { max-width: none; }
   .monitor, .about { padding: var(--st-s-4); }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
