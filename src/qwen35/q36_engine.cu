@@ -853,6 +853,56 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     return d;
 }
 
+// f32 -> IEEE binary16, round to nearest even (host; see f16_to_f32)
+uint16_t f32_to_f16(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u, ax = x & 0x7fffffffu;
+    if (ax >= 0x7f800000u) return (uint16_t) (sign | 0x7c00u | (ax > 0x7f800000u ? 0x200u : 0u));   // inf / nan
+    if (ax >= 0x477ff000u) return (uint16_t) (sign | 0x7c00u);       // rounds past 65504: inf
+    if (ax < 0x38800000u) {                                          // below 2^-14: a subnormal half, or 0
+        if (ax < 0x33000000u) return (uint16_t) sign;                // below 2^-25
+        const uint32_t m = (ax & 0x7fffffu) | 0x800000u;
+        const int shift = 126 - (int) (ax >> 23);                    // 14 .. 24
+        uint32_t q = m >> shift;
+        const uint32_t rem = m & ((1u << shift) - 1), half = 1u << (shift - 1);
+        if (rem > half || (rem == half && (q & 1u))) ++q;
+        return (uint16_t) (sign | q);
+    }
+    uint32_t h = (ax >> 13) - (112u << 10);                          // the exponent rebiased, 10 mantissa bits
+    const uint32_t rem = ax & 0x1fffu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u))) ++h;          // a carry into the exponent is right
+    return (uint16_t) (sign | h);
+}
+
+/// A float matrix (F32, F16 or BF16) as Q8_0 blocks, rounded the way llama.cpp's quantize_row_q8_0_ref rounds: per 32
+/// values d = max|x| / 127 (stored as F16) and q = round(x / d).  The native MMVQ has no float path, and some GGUFs
+/// keep small projections in F16 (the ICE files: attn_k / attn_v); Q8_0 is the nearest type it takes.
+std::vector<uint8_t> q8_0_from_float(const strata::TensorInfo& t, const uint8_t* src) {
+    const size_t n = (size_t) t.elements();
+    std::vector<uint8_t> out(n / 32 * 34);
+    float x[32];
+    for (size_t b = 0; b < n / 32; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < 32; ++j) {
+            const size_t i = b * 32 + (size_t) j;
+            if (t.type == 0) std::memcpy(&x[j], src + 4 * i, 4);
+            else {
+                const uint16_t v = (uint16_t) (src[2 * i] | (src[2 * i + 1] << 8));
+                x[j] = t.type == 30 ? bf16_to_f32(v) : f16_to_f32(v);
+            }
+            amax = std::max(amax, std::fabs(x[j]));
+        }
+        const float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+        uint8_t* o = out.data() + b * 34;
+        const uint16_t dh = f32_to_f16(d);
+        o[0] = (uint8_t) (dh & 0xff);
+        o[1] = (uint8_t) (dh >> 8);
+        for (int j = 0; j < 32; ++j) o[2 + j] = (uint8_t) (int8_t) std::round(x[j] * id);
+    }
+    return out;
+}
+
 bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     const auto t0 = Clock::now();
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
@@ -888,6 +938,8 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         bytes += t->elements() * 4;
         return upload_f32(*t, gm.shard(s).tensor_data(*t));
     };
+    int rounded_q8 = 0;   // float matrices rounded to Q8_0 (mat), the first one named in the log
+    std::string rounded_first;
     auto mat = [&](const std::string& name) -> Mat {
         size_t s = 0;
         const strata::TensorInfo* t = find(name, s);
@@ -895,21 +947,30 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         w.type = (int) t->type;
         w.n_in = (int) t->shape[0];
         w.n_out = (int) t->shape[1];
+        const uint8_t* src = gm.shard(s).tensor_data(*t);
+        uint64_t nb = strata::tensor_payload_bytes(*t);
+        std::vector<uint8_t> q8;   // a float matrix rounded to Q8_0 (q8_0_from_float)
+        if ((w.type == 0 || w.type == 1 || w.type == 30) && w.n_in % 32 == 0) {
+            q8 = q8_0_from_float(*t, src);
+            if (rounded_q8++ == 0) rounded_first = name + " (" + t->type_name() + ")";
+            w.type = 8;
+            src = q8.data();
+            nb = q8.size();
+        }
         if (!K::native_mmvq_supported(w.type)) {
             std::fprintf(stderr, "strata-q36: %s is %s, which the native MMVQ does not take\n", name.c_str(), t->type_name());
             std::exit(1);
         }
-        const uint64_t nb = strata::tensor_payload_bytes(*t);
         uint8_t* d = nullptr;
         CK(cudaMalloc(&d, nb));
-        CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(d, src, nb, cudaMemcpyHostToDevice));
         bytes += nb;
         w.d = d;
         // STRATA_Q8_PACKED (on by default here): the lossless qs / d plane copy the Q8_0 decode kernels read instead,
         // bitwise the same outputs
         if (w.type == 8 && K::native_q8_0_packed_enabled() && K::native_q8_0_packed_eligible(w.n_in, w.n_out)) {
             std::vector<uint8_t> packed(nb);
-            K::native_q8_0_pack_host(gm.shard(s).tensor_data(*t), packed.data(), w.n_in, w.n_out);
+            K::native_q8_0_pack_host(src, packed.data(), w.n_in, w.n_out);
             uint8_t* pd = nullptr;
             CK(cudaMalloc(&pd, nb));
             CK(cudaMemcpy(pd, packed.data(), nb, cudaMemcpyHostToDevice));
@@ -1008,6 +1069,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
                  "experts are placed after the engine's buffers)\n", path.c_str(), checked, (double) bytes / (1 << 30),
                  ms_since(t0) / 1000.0);
+    if (rounded_q8 > 0)
+        std::fprintf(stderr, "strata-q36: %d float matrices rounded to Q8_0 at load, the first %s: the decode kernels "
+                     "have no float path\n", rounded_q8, rounded_first.c_str());
     return true;
 }
 
