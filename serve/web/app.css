@@ -14,6 +14,14 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
 .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
 .st-header { position: relative; z-index: 2; flex: none; }
 .st-header .st-tabs { margin-left: var(--st-s-4); }
+/* the config's "models": which one the server runs (one at a time) */
+.model-pick { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--st-ink-muted); }
+.model-select { min-width: 0; max-width: 260px; height: 32px; padding: 0 8px; border-radius: var(--st-r-md);
+                border: 1.5px solid var(--st-line); background: var(--st-surface); color: var(--st-ink);
+                font: 400 var(--st-fs-sm) var(--st-font); text-overflow: ellipsis; cursor: pointer; }
+.model-select:focus { outline: 0; border-color: var(--st-focus); }
+.model-select:disabled { opacity: .6; cursor: progress; }
+.st-toast .t-text { overflow-wrap: anywhere; }   /* a long path or URL in a message wraps instead of running off */
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
@@ -191,6 +199,12 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
   #pill-text { display: none; }
   .st-header__brand { display: none; }
   .st-header .st-btn--icon { width: 32px; height: 32px; }
+  /* a phone: an icon button over the select, whose own picker lists the full names */
+  .model-pick { position: relative; flex: none; width: 32px; height: 32px; justify-content: center;
+                border: 1.5px solid var(--st-line); border-radius: var(--st-r-md); }
+  .model-select, .model-select:disabled { position: absolute; inset: 0; width: 100%; max-width: none; height: 100%;
+                                          opacity: 0; font-size: 16px; }
+  .model-pick:has(.model-select:disabled) { opacity: .6; }
   .chat { padding: var(--st-s-4) var(--st-s-3); gap: var(--st-s-4); }
   .chat-empty__title { font-size: var(--st-fs-xl); }
   .st-bubble { padding: 10px 12px; }
@@ -216,3 +230,8 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
 .img-results figure{margin:0}
 .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
 .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
+/* the narrowest phones (320 px): the tabs, the model button, the pill and the theme button still fit on one line */
+@media (max-width: 360px) {
+  .st-header { gap: 6px; }
+  .st-tab { padding: 0 7px; }
+}
