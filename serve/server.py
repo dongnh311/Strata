@@ -3127,6 +3127,7 @@ class Service:
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
+        self.fit_max_tokens_flag = False                # the command line's --fit-max-tokens, for every model switched to
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -3641,8 +3642,9 @@ class Service:
     def profile_state(self, name: str, path: str) -> dict:
         """What the engine and this service take from the run config at `path` to serve its model - the model-level
         keys: the engine (exe, args, cwd, log, env), the tokenizer and chat template, the image encoder, the sampling
-        defaults, reasoning_effort, effort_position, reasoning_budget_tokens, aliases and the Chat settings shared with
-        other apps.  The rest (address, API key, CORS, MCP, image generation, the GPU sharing hooks) stays the
+        defaults, reasoning_effort, effort_position, reasoning_budget_tokens, fit_max_tokens (a model with a small
+        window needs it for clients that ask for 32K tokens), reasoning_close_retry, aliases and the Chat settings
+        shared with other apps.  The rest (address, API key, CORS, MCP, image generation, the GPU sharing hooks) stays the
         server's, from the config it was started with.  ValueError says what is wrong, before anything has changed."""
         try:
             cfg = json.loads(Path(path).read_text(encoding="utf-8-sig"))
@@ -3709,7 +3711,9 @@ class Service:
                 "vision": vcfg, "vision_env": vision_env(cfg, env) if vcfg else None, "log": cfg.get("log"),
                 "aliases": aliases, "sampling_defaults": sampling, "effort_end": bool(effort_end),
                 "config_effort": effort, "reasoning_budget_tokens": budget, "shared_path": shared_path,
-                "shared": shared, "gpu_indices": gpu_list(cfg), "backend": cfg.get("backend")}
+                "shared": shared, "gpu_indices": gpu_list(cfg), "backend": cfg.get("backend"),
+                "fit_max_tokens": self.fit_max_tokens_flag or cfg.get("fit_max_tokens") is True,
+                "reasoning_close_retry": cfg.get("reasoning_close_retry") is True}
 
     def _apply_profile(self, st: dict) -> None:
         """Serve the model of profile_state's `st` from now on (the engine stopped; the next ensure_loaded starts it)."""
@@ -3727,6 +3731,7 @@ class Service:
         self.vision_held = False
         self.effort_end, self.config_effort = st["effort_end"], st["config_effort"]
         self.reasoning_budget_tokens = st["reasoning_budget_tokens"]
+        self.fit_max_tokens, self.reasoning_close_retry = st["fit_max_tokens"], st["reasoning_close_retry"]
         self.config_path, self.shared_path, self.shared = st["path"], st["shared_path"], st["shared"]
         self.gpu_indices, self.backend = st["gpu_indices"], st["backend"]
         self.gpu_index = (st["gpu_indices"] or [0])[0]
@@ -7277,6 +7282,7 @@ def main() -> int:
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.fit_max_tokens_flag = a.fit_max_tokens
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)

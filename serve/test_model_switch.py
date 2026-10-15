@@ -87,7 +87,8 @@ class Switch(unittest.TestCase):
         self.a = write(d / "a.json", {"exe": str(exe), "args": ["--native", str(d / "a.gguf"), "--max-context", "4096"],
                                       "model_name": "model-a", "vision": vision, "models": ["b.json", "c.json"]})
         write(d / "b.json", {"exe": str(exe), "args": ["--native", str(d / "b.gguf"), "--max-context", "8192"],
-                             "model_name": "model-b", "sampling": {"temperature": 0.6}, "aliases": ["b-alias"]})
+                             "model_name": "model-b", "sampling": {"temperature": 0.6}, "aliases": ["b-alias"],
+                             "fit_max_tokens": True})
         write(d / "c.json", {"exe": str(exe), "args": ["--native", str(d / "c.gguf"), "--fail"], "model_name": "model-c"})
         def encoder_up(vision):                         # the image encoder "runs" without a process
             vision.proc, vision.stopped = mock.Mock(**{"poll.return_value": None}), False
@@ -139,6 +140,7 @@ class Switch(unittest.TestCase):
         self.assertEqual(self.svc.sampling_defaults, {"temperature": 0.6})
         self.assertEqual(self.svc.aliases, ["b-alias"])
         self.assertIsNone(self.svc.vision)               # model-b has no image encoder
+        self.assertTrue(self.svc.fit_max_tokens)         # model-b's small window clamps a client's 32K cap
         self.assertTrue(first_vision.stopped)            # model-a's was stopped
         self.assertEqual(self.engine.info, {"version": "test"})
         code, answer = self.request("/v1/chat/completions", self.CHAT)
@@ -149,6 +151,7 @@ class Switch(unittest.TestCase):
         self.assertEqual(code, 200, body)
         self.assertTrue(self.engine.started[-1][1].endswith("a.gguf"))
         self.assertEqual(self.svc.sampling_defaults, {})
+        self.assertFalse(self.svc.fit_max_tokens)
         self.assertTrue(self.svc.vision.alive())         # model-a's encoder is back, a new one
         self.assertIsNot(self.svc.vision, first_vision)
         self.assertEqual(self.svc.models_view()["available"], ["model-a", "model-b", "model-c"])
