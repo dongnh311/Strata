@@ -308,6 +308,78 @@ __global__ void k_attn_part(const float* q, const float* kc, const float* vc, co
         pl[o] = l;
     }
 }
+/// k_attn_part for the G query heads that share a KV head, in one block: the chunk's K and V cells are read once for
+/// all G (k_attn_part reads them once per query head), a K cell by one warp (lane l: dims 8l .. 8l+7, coalesced).
+/// Same outputs as k_attn_part.  grid (n_chunk, n_t * HKV), block 256 (8 warps), HD == 256.
+template <int G>
+__global__ void __launch_bounds__(256) k_attn_part_g(const float* q, const float* kc, const float* vc,
+                                                     const int32_t* pos0, int t0, int H, int HKV, int ctx, float scale,
+                                                     int n_chunk, float* pacc, float* pm, float* pl) {
+    constexpr int HD = 256, NW = kThreads / 32;
+    __shared__ __align__(16) float qs[G][HD];
+    __shared__ float sc[G][kChunkCells], smax[G], ssum[G];
+    const int c = blockIdx.x, r = blockIdx.y;
+    const int t = t0 + r / HKV, kvh = r % HKV;
+    const int npos = *pos0 + t + 1;
+    const int p0 = c * kChunkCells;
+    if (p0 >= npos) return;
+    const int j = threadIdx.x, lane = j & 31, w = j >> 5;
+    for (int g = 0; g < G; ++g) qs[g][j] = q[((size_t) t * H + kvh * G + g) * HD + j];
+    __syncthreads();
+    const int n = min(kChunkCells, npos - p0);
+    for (int k = w; k < n; k += NW) {
+        const float4* kp = reinterpret_cast<const float4*>(kc + ((size_t) kvh * ctx + p0 + k) * HD) + lane * 2;
+        const float4 a = kp[0], b = kp[1];
+        float s[G];
+#pragma unroll
+        for (int g = 0; g < G; ++g) {
+            const float4 qa = *reinterpret_cast<const float4*>(&qs[g][lane * 8]);
+            const float4 qb = *reinterpret_cast<const float4*>(&qs[g][lane * 8 + 4]);
+            s[g] = a.x * qa.x + a.y * qa.y + a.z * qa.z + a.w * qa.w + b.x * qb.x + b.y * qb.y + b.z * qb.z + b.w * qb.w;
+        }
+#pragma unroll
+        for (int g = 0; g < G; ++g)
+            for (int o = 16; o > 0; o >>= 1) s[g] += __shfl_xor_sync(0xffffffffu, s[g], o);
+        if (lane == 0)
+            for (int g = 0; g < G; ++g) sc[g][k] = s[g] * scale;
+    }
+    __syncthreads();
+    for (int g = w; g < G; g += NW) {                    // a head's max and sum over the chunk, one warp
+        float m = -INFINITY;
+        for (int k = lane; k < n; k += 32) m = fmaxf(m, sc[g][k]);
+        for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+        float l = 0.f;
+        for (int k = lane; k < n; k += 32) {
+            const float e = expf(sc[g][k] - m);
+            sc[g][k] = e;
+            l += e;
+        }
+        for (int o = 16; o > 0; o >>= 1) l += __shfl_xor_sync(0xffffffffu, l, o);
+        if (lane == 0) {
+            smax[g] = m;
+            ssum[g] = l;
+        }
+    }
+    __syncthreads();
+    float acc[G];
+#pragma unroll
+    for (int g = 0; g < G; ++g) acc[g] = 0.f;
+    const float* vp = vc + ((size_t) kvh * ctx + p0) * HD + j;
+    for (int k = 0; k < n; ++k) {
+        const float v = vp[(size_t) k * HD];
+#pragma unroll
+        for (int g = 0; g < G; ++g) acc[g] += sc[g][k] * v;
+    }
+#pragma unroll
+    for (int g = 0; g < G; ++g) {
+        const size_t o = (size_t) ((r / HKV) * H + kvh * G + g) * n_chunk + c;   // k_attn_part's row: t - t0
+        pacc[o * HD + j] = acc[g];
+        if (j == 0) {
+            pm[o] = smax[g];
+            pl[o] = ssum[g];
+        }
+    }
+}
 /// The chunks merged, times sigmoid(gate): grid (n_rows), block HD.
 __global__ void k_attn_merge(const float* pacc, const float* pm, const float* pl, const float* gate,
                              const int32_t* pos0, int t0, int H, int n_chunk, float* out) {
@@ -1493,8 +1565,15 @@ struct Engine {
                     const int nt = std::min(rows_per, T - t0);
                     const int nc = graph_mode ? n_chunk
                                               : (int) std::min<int64_t>(n_chunk, (p0 + t0 + nt + kChunkCells - 1) / kChunkCells);
-                    k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV, ctx,
-                                                                         1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl);
+                    static const bool per_head = getenv("STRATA_Q36_ATTN_PER_HEAD") != nullptr;   // the old kernel
+                    if (H == 8 * HKV && HD == 256 && !per_head)                 // Qwen3.6-35B-A3B: 16 heads, 2 KV heads
+                        k_attn_part_g<8><<<dim3(nc, nt * HKV), kThreads, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV,
+                                                                                ctx, 1.0f / sqrtf((float) HD), n_chunk,
+                                                                                pacc, pm, pl);
+                    else
+                        k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV, ctx,
+                                                                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm,
+                                                                             pl);
                     k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att);
                 }
             }
