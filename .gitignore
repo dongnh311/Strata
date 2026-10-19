@@ -68,3 +68,6 @@ build-vision-cuda12.bat
 /strata-vector.ps1
 
 /expert-profile-learned*.bin
+
+# local Windows HIP packaging output
+dist-hip/

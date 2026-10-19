@@ -269,7 +269,7 @@ __dpct_inline__ void gr_write_cvec_norm_rs_kernel(
     float *__restrict__ R, const float *__restrict__ bo,
     const float *__restrict__ inj, int64_t inj_ld,
     const float *__restrict__ v_l, const float *__restrict__ s_l,
-    const int *__restrict__ on, int mode, const float *__restrict__ w,
+    const float *__restrict__ scale, int mode, const float *__restrict__ w,
     float eps, float *__restrict__ rs_out, uint16_t *__restrict__ xn16,
     uint16_t *__restrict__ xn16_lo, int64_t ldx) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -282,8 +282,8 @@ auto &sh = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
     const int c = (int) (row % HC);
     float* r = R + row * N;
     const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
-    const float s = *s_l;
-    const bool steer = *on != 0 && s != 0.0f;
+    const float s = *s_l * (*scale);                 // the per-layer scale times the request's strength (0 = off)
+    const bool steer = s != 0.0f;
     float x[GRW_PER];
     float dot = 0.0f;
     int k = 0;
@@ -2278,7 +2278,7 @@ void to_bf16(const float* x, uint16_t* y, int64_t n, void* stream, uint16_t* ylo
 }
 
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream,
-             uint16_t* xn16_lo) {
+             uint16_t* xn16_lo, bool /*f16img: the Turing FP16 image of xn16 (CUDA only)*/) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2297,7 +2297,7 @@ void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t
     check("gr_norm");
 }
 void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream,
-                uint16_t* xn16_lo, int64_t ldx) {
+                uint16_t* xn16_lo, int64_t ldx, bool /*f16img*/) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2360,7 +2360,8 @@ bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const 
 #endif
 }
 void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
-                      float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx) {
+                      float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx,
+                      bool /*f16img*/) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2386,8 +2387,8 @@ void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_l
     check("gr_write_norm_rs");
 }
 void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* v_l,
-                           const float* s_l, const int* on, int mode, const float* w_norm_next, float eps, float* rs,
-                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx) {
+                           const float* s_l, const float* scale, int mode, const float* w_norm_next, float eps, float* rs,
+                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx, bool /*f16img*/) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2405,7 +2406,7 @@ void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t 
                     [=](sycl::nd_item<3> item_ct1)
                         [[sycl::reqd_sub_group_size(32)]] {
                             gr_write_cvec_norm_rs_kernel(
-                                R, bo, inj, inj_ld, v_l, s_l, on, mode,
+                                R, bo, inj, inj_ld, v_l, s_l, scale, mode,
                                 w_norm_next, eps, rs, xn16, xn16_lo,
                                 ldx_ldx_D_ct13);
                         });
