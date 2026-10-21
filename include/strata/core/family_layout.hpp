@@ -148,6 +148,7 @@ inline LayerKind layer_kind(const ModelGeometry& g, int64_t layer) {
 struct TensorWant {
     std::string name;
     std::vector<int64_t> shape;
+    std::vector<int64_t> alt;   // an optional alias shape some GGUF writers emit (a [N] vector as [N, 1])
 };
 
 /// Every tensor of layer `layer` (kind from `layer_kind`), by family.
@@ -155,10 +156,12 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
     const LayerKind kind = layer_kind(g, layer);
     const int64_t N = g.n_embd, NE = g.n_expert, FF = g.n_ff, FS = g.n_ff_shexp;
     std::vector<TensorWant> t;
-    auto add = [&](const char* s, std::vector<int64_t> shape) { t.push_back({s, std::move(shape)}); };
+    auto add = [&](const char* s, std::vector<int64_t> shape, std::vector<int64_t> alt = {}) {
+        t.push_back({s, std::move(shape), std::move(alt)});
+    };
     // MoE, every layer (the MTP block's too)
     add("ffn_gate_inp.weight", {N, NE});
-    add("ffn_gate_inp_shexp.weight", {N});
+    add("ffn_gate_inp_shexp.weight", {N}, {N, 1});
     add("ffn_gate_shexp.weight", {N, FS});
     add("ffn_up_shexp.weight", {N, FS});
     add("ffn_down_shexp.weight", {FS, N});
@@ -241,7 +244,7 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
                               size_t* checked = nullptr) {
     std::set<std::string> named;
     size_t n = 0;
-    auto check = [&](const std::string& name, const std::vector<int64_t>& shape) {
+    auto check = [&](const std::string& name, const std::vector<int64_t>& shape, const std::vector<int64_t>& alt) {
         named.insert(name);
         size_t s = 0;
         const strata::TensorInfo* t = m.find(name, &s);
@@ -251,6 +254,10 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
         }
         bool same = t->shape.size() == shape.size();
         for (size_t i = 0; same && i < shape.size(); ++i) same = t->shape[i] == (uint64_t) shape[i];
+        if (!same && !alt.empty()) {
+            same = t->shape.size() == alt.size();
+            for (size_t i = 0; same && i < alt.size(); ++i) same = t->shape[i] == (uint64_t) alt[i];
+        }
         if (!same) {
             std::string got, want;
             for (uint64_t d : t->shape) got += (got.empty() ? "" : ", ") + std::to_string(d);
@@ -266,10 +273,10 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
         return true;
     };
     for (const TensorWant& w : global_tensors(g))
-        if (!check(w.name, w.shape)) return false;
+        if (!check(w.name, w.shape, w.alt)) return false;
     for (int64_t l = 0; l < g.n_layers + g.n_mtp_layers; ++l)
         for (const TensorWant& w : layer_tensors(g, l))
-            if (!check("blk." + std::to_string(l) + "." + w.name, w.shape)) return false;
+            if (!check("blk." + std::to_string(l) + "." + w.name, w.shape, w.alt)) return false;
     if (layout_table_complete(g)) {
         for (size_t s = 0; s < m.size(); ++s)
             for (const strata::TensorInfo& t : m.shard(s).tensors())

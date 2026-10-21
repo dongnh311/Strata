@@ -100,6 +100,10 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     }
     f.act_bytes = ggml_row_size(tg->vec_dot_type, n_embd);
     f.h_bytes = ggml_row_size(td->vec_dot_type, trim ? (n_ff + 255) / 256 * 256 : n_ff);
+    if (f.n_ff > kNativeFF) {
+        err = "native experts: expert intermediate wider than the pool's buffers";
+        return false;
+    }
     if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
         err = "native experts: activation larger than the pool's buffers";
         return false;
@@ -133,7 +137,8 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
     if (f.d_tail) {   // Q8_K wants whole 256-value blocks: h, then zeros (they meet the half block's zero scales)
         const int64_t n = (f.n_ff + 255) / 256 * 256;
-        float pad[1024];   // native_fmt admits h_bytes <= kNativeHBytes, i.e. at most 3 Q8_K blocks: n <= 768
+        float pad[2048];   // native_fmt admits n_ff <= kNativeFF = 2048; with the (n_ff % 256 == 128) trim that is
+        // still at most ceil256(1920) = 2048 floats (1792 and every wider multiple of 256 has no tail)
         if (n > (int64_t) (sizeof pad / sizeof pad[0])) std::abort();
         std::memcpy(pad, h, (size_t) f.n_ff * sizeof(float));
         std::memset(pad + f.n_ff, 0, (size_t) (n - f.n_ff) * sizeof(float));

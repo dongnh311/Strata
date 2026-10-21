@@ -13,10 +13,16 @@
 
 namespace strata::kernels::cpu {
 
-/// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292).
+/// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292);
+/// Flash-Next's 3072 values as Q8_K are 12 x 292 = 3504.
 inline constexpr size_t kNativeActBytes = 4096;
-/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292).
-inline constexpr size_t kNativeHBytes = 1024;
+/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292; Flash-Next's
+/// 1024 values as Q8_K: 4 x 292 = 1168, as Q8_0: 32 x 34 = 1088).  2048 holds Q8_K for n_ff <= 1792 and Q8_0
+/// for n_ff <= 1920.
+inline constexpr size_t kNativeHBytes = 2048;
+/// Values of the largest expert intermediate the pool's native scratch holds per token (pool.hpp's
+/// SplitBufMulti::ff: n_ff floats per token); native_fmt rejects wider layers.
+inline constexpr int64_t kNativeFF = 2048;
 
 /// One layer's native expert geometry.
 struct NativeFmt {
