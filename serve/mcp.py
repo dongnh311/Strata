@@ -462,8 +462,18 @@ class McpServer:
 
 
 # ------------------------------------------------------------------------------------------------ the hub
-def result_text(result: dict) -> str:
-    """An MCP tool result as the text the model reads: the text blocks as they are, other blocks named."""
+MAX_RESULT_IMAGES = 2          # pictures a single tool result may attach to the model's context
+
+
+def result_parts(result: dict) -> tuple[str, list[dict]]:
+    """An MCP tool result split the way the model reads it: (text, images).  Text blocks (and resource/link blocks,
+    named) become the text as before; an image block that carries a local path or a URL in `source` becomes one
+    {"type": "image", "source": <that string>} part to attach to the tool message - the encoder draws it (the same
+    shape Claude Code's Read sends, which the prompt's image pass already handles).  A data-carrying image block
+    (the MCP standard's base64) keeps being NAMED in the text, not shown: nothing in this stack produces one, and
+    turning base64 into a file is future work.  Text-only results come back with the text unchanged and no images,
+    so the default path is byte-identical."""
+    images = []
     parts = []
     for block in result.get("content") or []:
         if not isinstance(block, dict):
@@ -477,14 +487,28 @@ def result_text(result: dict) -> str:
                                                                   f"({res.get('mimeType', 'binary')}), not shown]")
         elif kind == "resource_link":
             parts.append(f"[resource link: {block.get('name') or ''} {block.get('uri', '')}]".replace("  ", " "))
+        elif kind == "image" and isinstance(block.get("source"), str) and block.get("source"):
+            src = block["source"]
+            name = src.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            images.append({"type": "image", "source": src})
+            parts.append(f"[picture attached to this message: {name}]")
         elif kind in ("image", "audio"):
             size = len(block.get("data") or "") * 3 // 4
             parts.append(f"[{kind} ({block.get('mimeType', '?')}, {size:,} bytes): not shown to the model]")
         else:
             parts.append(json.dumps(block, ensure_ascii=False))
+    if len(images) > MAX_RESULT_IMAGES:
+        dropped = len(images) - MAX_RESULT_IMAGES
+        images = images[:MAX_RESULT_IMAGES]
+        parts.append(f"[{dropped} picture(s) left out of this result: only {MAX_RESULT_IMAGES} fit]")
     if not parts and result.get("structuredContent") is not None:
         parts.append(json.dumps(result["structuredContent"], ensure_ascii=False))
-    return "\n".join(parts)
+    return "\n".join(parts), images
+
+
+def result_text(result: dict) -> str:
+    """An MCP tool result as the text the model reads (see result_parts for the split)."""
+    return result_parts(result)[0]
 
 
 def _clean(name: str) -> str:
@@ -554,13 +578,15 @@ class McpHub:
         t0 = time.monotonic()
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
         out = {"server": server.name if server else None, "tool": tool}
+        images: list[dict] = []                     # picture parts for the tool message (result_parts fills it)
         if server is None:
             text, ok = f"error: there is no tool named {name!r}", False
         else:
             try:
                 res = server.call(tool, arguments if isinstance(arguments, dict) else {},
                                   float(self.settings["timeout_s"]), cancel)
-                text, ok = result_text(res), not res.get("isError")
+                text, images = result_parts(res)
+                ok = not res.get("isError")
                 if not ok:
                     text = "error: " + (text or "the tool reported an error")
             except McpCancelled:
@@ -572,7 +598,8 @@ class McpHub:
         if cap > 0 and full > cap:
             text = text[:cap] + (f"\n\n[... truncated: the tool returned {full:,} characters; only the first "
                                  f"{cap:,} are shown]")
-        out.update(ok=ok, text=text, chars=full, truncated=cap > 0 and full > cap,
+        out.update(ok=ok, text=text, chars=full, images=images,
+                   truncated=cap > 0 and full > cap,
                    ms=int((time.monotonic() - t0) * 1000))
         return out
 

@@ -52,6 +52,7 @@
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="st-slash" id="slash" role="listbox" aria-label="Slash commands" hidden></div>
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
@@ -65,6 +66,7 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
             <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+          <span class="st-ctx" id="ctx-meter" hidden></span>
           <span class="spacer"></span>
           <span class="composer-hint" id="composer-hint"></span>
           <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>

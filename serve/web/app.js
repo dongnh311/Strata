@@ -113,6 +113,33 @@ async function loadHealth() {
   }
 }
 
+// ------------------------------------------------------------------ context meter
+// /slots keeps the last request's prompt size next to n_ctx ("a front-end's context meter", #562): the meter shows
+// how much of the context window that turn (or any request on this engine, whichever app made it) really planned
+// to read. After /clear or /compact it shows a dash until the next turn, when the server sees the new history.
+let ctxMeter = null;                                   // {used, n_ctx} as the server last reported
+async function refreshCtx() {
+  try {
+    const s = ((await (await fetch("slots", {headers: headers()})).json())[0]) || {};
+    const used = Math.max(0, +s.n_prompt_tokens || 0), n = +s.n_ctx || 0;
+    ctxMeter = n > 0 ? {used, n_ctx: n} : null;
+  } catch (e) { ctxMeter = null; }
+  renderCtx();
+}
+function renderCtx() {
+  const el = $("ctx-meter");
+  if (!ctxMeter) { el.hidden = true; return; }
+  const {used, n_ctx} = ctxMeter;
+  const pct = Math.min(100, Math.round((used / n_ctx) * 100));
+  const free = Math.max(0, n_ctx - used);
+  const tone = pct >= 85 ? "st-ctx--danger" : pct >= 60 ? "st-ctx--warn" : "";
+  el.className = `st-ctx ${tone}`;
+  el.title = `${fmt(used)} prompt tokens on the last request · ${fmt(free)} free · ${fmt(n_ctx)} total`;
+  el.hidden = false;
+  el.innerHTML = `<span class="st-ctx__bar"><span style="width:${pct}%"></span></span>` +
+                 `<span class="st-ctx__text">${ctxfmt(free)} of ${ctxfmt(n_ctx)} free</span>`;
+}
+
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
@@ -695,6 +722,21 @@ function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
+  // attach_file: the file is pasted INTO the message - a card that is open by default, not a collapsed tool block
+  if (t.tool === "attach_file" && t.ok && t.result != null) {
+    const nl = t.result.indexOf("\n");
+    const head = nl >= 0 ? t.result.slice(0, nl) : "";
+    const kb = head.match(/\(([\d,]+) bytes\):\s*$/);
+    const ki = head.indexOf("k\u00E8m ");
+    const path = ki >= 0 ? head.slice(ki + 4).replace(/\s*\([\d,]+ bytes\):\s*$/, "") : "";
+    const name = path.split(/[\\/]/).pop() || "file";
+    return `<div class="st-attach" data-tool="${k}">` +
+      `<div class="st-attach__head">${icon("attach", "st-icon st-icon--sm")}` +
+      `<span class="st-attach__name" title="${esc(path)}">${esc(name)}` +
+      `${kb ? ` <span class="muted small">${esc(kb[1])} bytes</span>` : ""}</span>` +
+      `${t.ms != null ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}</div>` +
+      `<pre class="st-attach__pre">${esc(nl >= 0 ? t.result.slice(nl + 1) : "")}</pre></div>`;
+  }
   let body = "";
   if (t.open) {
     body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
@@ -710,9 +752,31 @@ function toolHtml(t, k) {
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
+// Generated pictures to embed in the answer: the picture sidecar's direct /img links (a generate_image tool answer always
+// carries one below its gallery link) are taken from the tool-result fields - the trusted origin of the URL - and never
+// from the model's own text, which can mention any address.
+function sidecarImageUrls(m) {
+  const urls = [];
+  for (const t of m.tools || []) {
+    for (const u of (t.result || "").match(/https?:\/\/[^\s"']+\/(?:img\/[0-9a-f]{12}\.png|graphs\/[A-Za-z0-9_-]+\.(?:png|svg))/g) || []) {
+      const clean = u.replace(/[.,;:!)]+$/, "");
+      if (!urls.includes(clean)) urls.push(clean);
+    }
+  }
+  return urls.slice(0, 6);                        // a picture and (or) a couple of diagrams per answer is plenty
+}
+function imgStrip(urls) {
+  return urls.length
+    ? `<div class="msg-images">${urls.map((u) => {
+        const plot = u.includes("/graphs/");
+        return `<a href="${esc(u)}" target="_blank" rel="noopener" title="Open the full picture"><img src="${esc(u)}" alt="${plot ? "diagram" : "generated picture"}" class="${plot ? "st-plot" : ""}" loading="lazy"></a>`;
+      }).join("")}</div>`
+    : "";
+}
 // the answer's text with the tool blocks where the model called them
 function answerHtml(m) {
-  if (!m.tools || !m.tools.length) return markdown(m.text || "");
+  const imgs = imgStrip(sidecarImageUrls(m));
+  if (!m.tools || !m.tools.length) return imgs + markdown(m.text || "");
   let html = "", pos = 0;
   m.tools.forEach((t, k) => {
     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
@@ -720,7 +784,7 @@ function answerHtml(m) {
     pos = at;
     html += toolHtml(t, k);
   });
-  return html + markdown(m.text.slice(pos));
+  return imgs + html + markdown(m.text.slice(pos));
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -860,12 +924,13 @@ function setBusy(on) {
 
 async function send() {
   const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
+  if ((!text && !attachments.length) || busy || compacting) return;
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
   renderAttachments();
   $("input").value = "";
+  slashClose();                                        // a programmatic clear: no input event fires
   autosize();
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
@@ -959,25 +1024,134 @@ async function send() {
   updateAssistant(el, m, false);
   saveChat();
   scrollDown();
+  refreshCtx();                                        // the server now knows this request's real prompt size
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
-$("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
+$("stop-btn").onclick = () => {
+  if (busy) busy.controller.abort();
+  else if (compacting) compacting.abort();
+};
 $("input").addEventListener("keydown", (e) => {
+  if (slashHits.length) {                              // the palette outranks plain Enter while it is open
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : slashHits.length - 1)) % slashHits.length;
+      slashRender();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); slashRun(slashHits[slashSel]); return; }
+    if (e.key === "Tab") { e.preventDefault(); $("input").value = "/" + slashHits[slashSel].cmd; slashUpdate(); return; }
+    if (e.key === "Escape") { slashClose(); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", autosize);
+$("input").addEventListener("input", () => { autosize(); slashUpdate(); });
 
-$("new-btn").onclick = () => {
+// ------------------------------------------------------------------ slash commands
+// Constructors: "/" opens the palette above the composer; the list filters on the first word while it is being
+// typed. Enter (or a click) runs the highlighted command; Tab completes the word; a word that matches no command
+// is just a message, so pasting "/etc/foo" into a question stays harmless.
+const COMMANDS = [
+  {cmd: "clear", desc: "Clear the chat (6 s undo, the same as the New chat button)"},
+  {cmd: "compact", desc: "Replace the history with a short summary of it, ask follow-ups lighter"},
+];
+const slash = $("slash");
+let slashHits = [], slashSel = 0;
+
+function slashUpdate() {
+  const m = $("input").value.match(/^\/(\S*)/);        // only while the first word is a slash word
+  slashHits = m ? COMMANDS.filter((c) => c.cmd.startsWith(m[1].toLowerCase())) : [];
+  slashSel = 0;
+  slashRender();
+}
+function slashRender() {
+  if (!slashHits.length) { slashClose(); return; }
+  slash.innerHTML = slashHits.map((c, i) =>
+    `<div class="st-slash__item" role="option" data-i="${i}" aria-selected="${i === slashSel}">` +
+    `<span class="st-slash__cmd">/${c.cmd}</span><span class="st-slash__desc">${esc(c.desc)}</span></div>`).join("") +
+    `<div class="st-slash__hint">&uarr;&darr; select &middot; Enter runs &middot; Tab completes &middot; Esc closes</div>`;
+  slash.hidden = false;
+}
+function slashClose() { slashHits = []; slash.hidden = true; }
+function slashRun(c) {
+  $("input").value = "";                               // commands take no argument
+  autosize();
+  slashClose();
+  if (c.cmd === "clear") newChat();
+  else if (c.cmd === "compact") compactChat();
+}
+slash.addEventListener("pointerdown", (e) => {         // pointerdown: keep the textarea's focus, no blur
+  e.preventDefault();
+  const item = e.target.closest(".st-slash__item");
+  if (item) slashRun(slashHits[+item.dataset.i]);
+});
+
+function newChat() {                                   // the button and /clear share this
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (compacting) { toast("warn", "Busy", "Wait for the compaction to finish."); return; }
   if (!messages.length) return;
   const backup = messages;
   messages = [];
   saveChat();
   renderChat();
+  ctxMeter = null;                                     // the server has not seen the new (empty) history yet
+  renderCtx();
   toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-};
+}
+$("new-btn").onclick = newChat;
+
+// /compact: one non-streamed turn asks the model to summarize, then the history swaps for that summary as the
+// opening user message. The request rides the same endpoint and key as a normal turn, with the MCP tools off, so
+// the next question starts from a page instead of the whole scroll back.
+const COMPACT_PROMPT = ("Summarize the conversation above in up to 120 words of plain text: what was asked, what was " +
+  "built or decided, the names of files, tools and links that matter, the open questions and the next steps. " +
+  "A compact list is fine; no headings, no commentary about this instruction itself.");
+let compacting = null;                                 // the AbortController while a compaction turn runs
+
+async function compactChat() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (compacting) return;
+  if (messages.length < 2) { toast("info", "Nothing to compact", "Chat a little first."); return; }
+  const before = messages.reduce((n, m) => n + (m.text || "").length + (m.reasoning || "").length +
+                                         (m.tools || []).reduce((t, tool) => t + (tool.result || "").length, 0), 0);
+  const ctrl = new AbortController();
+  compacting = ctrl;
+  setBusy(true);
+  $("composer-hint").textContent = "Compacting\u2026";
+  toast("info", "Compacting", "Asking the model to summarize the chat.");
+  const ask = apiMessages().concat([{role: "user", content: COMPACT_PROMPT}]);
+  try {
+    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true),
+      body: JSON.stringify({model: health.model, messages: ask, stream: false, max_tokens: 800}),
+      signal: ctrl.signal});
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { msg = (await r.json()).error.message || msg; } catch (err) { /* not json */ }
+      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      throw new Error(msg);
+    }
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "the engine reported an error");
+    const d = (j.choices && j.choices[0] && j.choices[0].message) || {};
+    const summary = ((d.content || "").trim() || (d.reasoning_content || "").trim());
+    if (!summary) throw new Error("the model answered nothing");
+    messages = [{role: "user", text: "[Compacted chat]\n" + summary, time: Date.now()}];
+    saveChat();
+    renderChat();
+    scrollDown(true);
+    toast("success", "Compacted", `${fmt(before)} → ${fmt(summary.length)} characters.`, 8000);
+  } catch (e) {
+    if (e.name === "AbortError") toast("info", "Compaction cancelled", "The history is unchanged.");
+    else toast("error", "Compacting failed", e.message || String(e), 6000);
+  } finally {
+    compacting = null;
+    setBusy(false);
+    ctxMeter = null;                                   // stale anyway: the summary has not been a turn yet
+    renderCtx();
+  }
+}
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
@@ -1231,7 +1405,9 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } })
+       .then(refreshCtx).catch(() => { });
+setInterval(() => refreshCtx(), 30000);                // other apps can fill the same engine meanwhile
 showTab(location.hash.slice(1) || "chat");
 poll();
 

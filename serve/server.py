@@ -5159,7 +5159,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                               "chars": 0, "truncated": False, "ms": 0}
             break
         rounds += 1
-        results = []
+        results, tool_images = [], []
         for c in calls:
             s, tool = hub.routes().get(c.name, (None, c.name))
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
@@ -5189,6 +5189,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r["text"])
+            tool_images.append(r.get("images") or [])
             yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
@@ -5196,7 +5197,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         messages.append({"role": "assistant", "content": "".join(text).strip(),
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
-        messages += [{"role": "tool", "content": r} for r in results]
+        messages += [{"role": "tool",
+                      "content": rtext if not imgs else [{"type": "text", "text": rtext}, *imgs]}
+                     for rtext, imgs in zip(results, tool_images)]
         if rounds >= max_rounds:                         # the last round: the next pass must answer, not ask for another tool
             messages[-1] = {**messages[-1], "content": messages[-1]["content"] + "\n\n" + TOOL_LIMIT_NOTE}
         try:

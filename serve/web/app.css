@@ -57,6 +57,9 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
 .st-bubble th, .st-bubble td { border: 1px solid var(--st-line); padding: 6px 10px; text-align: left; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: min(220px, 100%); max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
+/* generated pictures embedded in an answer (the picture sidecar's /img links) */
+.st-msg--assistant .msg-images { justify-content: flex-start; }
+.st-msg--assistant .msg-images img.st-plot { max-width: min(440px, 100%); max-height: 300px; }   /* diagrams want pixels */
 .st-msg .st-collapse { width: 100%; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
@@ -79,7 +82,7 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
 
-.composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
+.composer-wrap { flex: none; position: relative; padding: 0 var(--st-s-6) var(--st-s-6); }
 .st-composer { max-width: 860px; margin: 0 auto; }
 .st-composer textarea { max-height: 40vh; }
 .st-btn--send { width: 42px; padding: 0; }
@@ -90,6 +93,41 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
         background: var(--st-surface-2); border: 1px solid var(--st-line); font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
 .chip .st-btn--icon { width: 22px; height: 22px; border-radius: 50%; }
 .chip .st-btn--icon .st-icon { width: 14px; height: 14px; }
+
+/* ---------------------------------------------------------------- slash commands */
+.st-slash { position: absolute; bottom: calc(100% - var(--st-s-6) + 8px); left: 50%; transform: translateX(-50%);
+            width: min(560px, calc(100vw - 32px)); background: var(--st-surface); border: 1px solid var(--st-line);
+            border-radius: var(--st-r-sm); box-shadow: var(--st-sh-pop); padding: 6px; z-index: 30; }
+.st-slash__item { display: flex; align-items: baseline; gap: var(--st-s-3); padding: 8px 10px;
+                  border-radius: var(--st-r-sm); cursor: pointer; }
+.st-slash__item[aria-selected="true"] { background: var(--st-accent-tint); }
+.st-slash__cmd { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); font-weight: 600; color: var(--st-ink); }
+.st-slash__desc { font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
+.st-slash__hint { padding: 5px 10px 3px; margin-top: 4px; border-top: 1px solid var(--st-line-soft);
+                  font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+
+/* ---------------------------------------------------------------- context meter */
+.st-ctx { display: inline-flex; align-items: center; gap: 6px; margin-right: var(--st-s-2); }
+.st-ctx__bar { width: 56px; height: 6px; border-radius: 999px; background: var(--st-surface-2); overflow: hidden; }
+.st-ctx__bar > span { display: block; height: 100%; border-radius: inherit;
+                      background: var(--st-accent); transition: width var(--st-dur) var(--st-ease); }
+.st-ctx--warn .st-ctx__bar > span { background: var(--st-warn); }
+.st-ctx--danger .st-ctx__bar > span { background: var(--st-danger); }
+.st-ctx__text { font-size: var(--st-fs-xs); color: var(--st-ink-soft); font-variant-numeric: tabular-nums;
+                white-space: nowrap; }
+
+/* ---------------------------------------------------------------- attached file (attach_file tool result)
+   pasted INTO the answer: an open card with the file's content, unlike the collapsed tool blocks */
+.st-attach { border: 1px solid var(--st-line); border-radius: var(--st-r-sm); background: var(--st-code-bg);
+             margin: 8px 0; overflow: hidden; }
+.st-attach__head { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+                   border-bottom: 1px solid var(--st-line-soft); }
+.st-attach__name { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); color: var(--st-ink-soft);
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-attach__pre { margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto; font-family: var(--st-font-mono);
+                  font-size: var(--st-fs-xs); line-height: var(--st-lh-tight); white-space: pre-wrap;
+                  word-break: break-word; }
+.st-attach__head .st-icon { flex: none; }
 
 /* ---------------------------------------------------------------- monitor */
 .view--monitor, .view--about { overflow-y: auto; }
@@ -198,6 +236,7 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
   .st-tab .st-icon { display: none; }
   #pill-text { display: none; }
   .st-header__brand { display: none; }
+  .st-ctx__text { display: none; }                     // a phone: the bar only
   .st-header .st-btn--icon { width: 32px; height: 32px; }
   /* a phone: an icon button over the select, whose own picker lists the full names */
   .model-pick { position: relative; flex: none; width: 32px; height: 32px; justify-content: center;

@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
+from serve.mcp import MAX_RESULT_IMAGES, McpCancelled, McpHub, hub_from_config, result_parts, result_text  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -647,6 +647,50 @@ class BareToolNames(unittest.TestCase):
         p = OutputParser(thinking=True, tools=None, stream_tools=True)
         evs = p.feed(text) + p.finish()
         self.assertEqual([e.call.name for e in evs if e.kind == "tool_call"], ["echo"])
+
+
+# --------------------------------------------------------------------------- image parts in tool results
+class ToolImages(unittest.TestCase):
+    """A tool result that carries a picture: an image block with a string `source` (a local path or a URL - the
+    shape the prompt's image pass already handles) becomes a part attached to the tool message; data blocks stay
+    named in the text.  The fake server's `picture` tool supplies them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hub = McpHub({"fake": stdio()}, {"timeout_s": 5})
+        cls.hub.start(wait=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.hub.close()
+
+    def test_a_source_image_becomes_a_part_the_text_names_attached(self):
+        r = self.hub.call("fake__picture", {"sources": ["D:\\graphs\\arch.png"]})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["images"], [{"type": "image", "source": "D:\\graphs\\arch.png"}])
+        self.assertIn("here it is", r["text"])
+        self.assertIn("arch.png", r["text"])
+
+    def test_parts_keep_their_order_after_the_text(self):
+        r = self.hub.call("fake__picture", {"sources": ["a.png", "b.png"]})
+        self.assertEqual(r["images"], [{"type": "image", "source": "a.png"}, {"type": "image", "source": "b.png"}])
+
+    def test_more_than_the_cap_is_left_out_with_a_note(self):
+        r = self.hub.call("fake__picture", {"sources": ["a.png", "b.png", "c.png"]})
+        self.assertEqual(len(r["images"]), MAX_RESULT_IMAGES)
+        self.assertIn("left out", r["text"])
+
+    def test_text_only_results_keep_the_default_path_exactly(self):
+        r = self.hub.call("fake__echo", {"text": "plain"})
+        self.assertEqual((r["ok"], r["text"], r["images"]), (True, "plain", []))
+
+    def test_a_data_block_is_named_not_shown(self):
+        self.assertEqual(result_text({"content": [{"type": "image", "data": "abcdefgh", "mimeType": "image/png"},
+                                                  {"type": "text", "text": "word"}]}),
+                         "[image (image/png, 6 bytes): not shown to the model]\nword")
+        self.assertEqual(result_parts({"content": [{"type": "image", "data": "abcdefgh",
+                                                    "mimeType": "image/png"}]}),
+                         ("[image (image/png, 6 bytes): not shown to the model]", []))
 
 
 if __name__ == "__main__":
