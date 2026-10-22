@@ -176,6 +176,7 @@ main { flex: 1; min-height: 0; min-width: 0; display: flex; }
 .req-totals:empty { display: none; }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
+.cc-bars > div { display: flex; flex-direction: column; gap: var(--st-s-2); }   /* the label keeps its distance from the bar, as in the other bars */
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
