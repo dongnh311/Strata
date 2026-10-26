@@ -1,0 +1,24 @@
+@echo off
+rem Launch Claude Code against the local Strata model (qwen38-orca-q2k-refusal) in the CURRENT directory.
+rem Usage: cd to your project, then run  code-strata   (passes any args through to claude, e.g. code-strata -p "task")
+rem Needs the Strata server running on 127.0.0.1:18080 (run-unc48l-q2ktrim-refusal.bat).
+setlocal
+set "ANTHROPIC_BASE_URL=http://127.0.0.1:18080"
+rem The server now requires an API key (it binds 0.0.0.0 for LAN/Tailscale clients; AGENTS.md requires a key for that):
+set "ANTHROPIC_AUTH_TOKEN=ea37621c05c3424bad593d1c30f97e03d1b7180481e345a193d2227f56cc6ea3"
+set "ANTHROPIC_MODEL=qwen38-orca-q2k-refusal"
+set "ANTHROPIC_SMALL_FAST_MODEL=qwen38-orca-q2k-refusal"
+rem Let the server run its MCP tools (gateway: web_search, fetch_url, ...) for this session - Strata executes them:
+set "ANTHROPIC_CUSTOM_HEADERS=X-Strata-MCP: 1"
+rem Unlock the real 512K window (Claude Code otherwise caps an unknown model at 200K and auto-compacts):
+set "CLAUDE_CODE_MAX_CONTEXT_TOKENS=524288"
+set "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1"
+set "CLAUDE_CODE_AUTO_COMPACT_WINDOW=524288"
+rem No background session-title request (a ~2.1K-token call that took 11-16 s at the start of every session):
+set "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1"
+rem A separate profile so Strata-coding history/settings stay apart from your normal Claude Code:
+set "CLAUDE_CONFIG_DIR=D:\GitHub\Strata-data\cc-strata"
+rem quick health check so a down server gives a clear message instead of a confusing error
+curl.exe -s -m 3 -o NUL http://127.0.0.1:18080/v1/models || (echo  Strata server not reachable on 127.0.0.1:18080 - start run-q2_0-v140-refusal.bat first. & pause & exit /b 1)
+rem Subagents (Agent/Workflow) run in parallel, but Strata serves one request at a time and keeps ONE conversation warm: each subagent turn pushes your session out of the cache, which then re-reads (64-108 s at 43K-72K tokens). Remove the flag if you want subagents anyway.
+claude %* --disallowedTools "Agent,Workflow"
