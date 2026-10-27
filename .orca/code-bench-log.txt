@@ -1,0 +1,14 @@
+17:54:18 === model deepseek-v4.1-flash ===
+17:55:31 deepseek-v4.1-flash merge_fix    pass 5/5  wall   73.0s  comp  170 tok   2.33 tok/s  prompt 129
+17:56:41 deepseek-v4.1-flash lis          pass 5/5  wall   69.4s  comp  535 tok   7.70 tok/s  prompt 66
+17:58:05 deepseek-v4.1-flash csv_parser   pass 4/4  wall   84.0s  comp  581 tok   6.91 tok/s  prompt 95
+17:58:44 deepseek-v4.1-flash top_ips      pass 3/3  wall   38.6s  comp  217 tok   5.63 tok/s  prompt 99
+17:58:44 === model qwen38-q2_0-refusal ===
+17:59:25 qwen38-q2_0-refusal merge_fix    pass 5/5  wall   41.3s  comp  271 tok   6.56 tok/s  prompt 157
+17:59:30 qwen38-q2_0-refusal lis          pass 5/5  wall    4.9s  comp  269 tok  54.57 tok/s  prompt 87
+17:59:40 qwen38-q2_0-refusal csv_parser   pass 4/4  wall   10.4s  comp  583 tok  55.94 tok/s  prompt 115
+17:59:47 qwen38-q2_0-refusal top_ips      pass 3/3  wall    6.7s  comp  330 tok  49.43 tok/s  prompt 117
+17:59:47 === summary ===
+17:59:47 deepseek-v4.1-flash      tests 17/17  wall 265.0s  tokens 1503  avg 5.67 tok/s
+17:59:47 qwen38-q2_0-refusal      tests 17/17  wall 63.3s  tokens 1453  avg 22.95 tok/s
+17:59:47 === done ===
