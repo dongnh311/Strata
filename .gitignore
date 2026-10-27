@@ -95,3 +95,7 @@ node_modules/
 
 # config backups carry the local API key
 /strata-*.json.bak*
+
+# local benchmark files that embed the API key (never commit)
+/.orca/ab-bench-v026.ps1
+/.orca/strata-ab-*.json
