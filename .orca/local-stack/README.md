@@ -43,8 +43,20 @@ app / opencode / web
    dùng `--new-key` của Terminal).
 3. `run-router.bat` (hoặc để `start-all.ps1` gọi qua `stack.env`: `STRATA_BAT=...run-router.bat`,
    `STRATA_PORT=8081`, `STRATA_URL=http://127.0.0.1:8081`).
-4. Web: mở qua router (ví dụ `https://pc-dik-win.tail1b3f7b.ts.net:8443` → 8081), không mở
-   thẳng 18080, nếu muốn thấy DeepSeek trong picker.
+4. Web: mở qua router, không mở thẳng 18080 (xem "Truy cập" dưới).
+
+## Truy cập (giữ cả hai đường)
+
+| Đường | URL | Ghi chú |
+|---|---|---|
+| **LAN (cùng mạng công ty)** | `http://172.16.14.244:8081` | **HTTP** (không phải https), đúng cổng **8081**. IP là DHCP — lease 2 giờ, có thể đổi sau reboot/renew. |
+| **Tailscale** | `https://pc-dik-win.tail1b3f7b.ts.net:8443` | Ổn định; `tailscale serve` ánh xạ 8443 → 127.0.0.1:8081, chỉ nghe trên IP Tailscale `100.115.8.1`. |
+
+- `:8443` **không** mở trên LAN (chỉ Tailscale). Đừng dùng `https://172.16.14.244:8443`.
+- `:18080` (qwen trực tiếp) bị firewall chặn vì server chạy bằng `.venv\Scripts\python.exe`
+  (rule hiện có chỉ cho `...\Python312\python.exe`). Luôn đi qua router 8081.
+- Muốn IP LAN cố định: nhờ IT đặt **DHCP reservation** cho MAC này; đừng tự đặt static IP
+  trên mạng công ty (dễ trùng IP / vi phạm policy). Địa chỉ ổn định để dùng là tên Tailscale.
 
 `run-router.bat` đặt `STRATA_PREFILL_CPU_SHARE=0` — biến này phải nằm trong môi trường của
 **server**, không phải chỉ trong config (config `"env"` chỉ tới engine).
