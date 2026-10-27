@@ -85,6 +85,7 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
+from serve import dsv41_vision  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -3918,8 +3919,11 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = True):
+                 fit_max_tokens: bool = True, native_vision: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        # DeepSeek-V4.1: the pack's own vision tower, the dsv41 engine encodes the pictures (no strata-vision)
+        self.native_vision = native_vision
+        self.native = threading.local()
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
         self.fit_max_tokens_flag = False                # the command line's --fit-max-tokens, for every model switched to
@@ -4947,7 +4951,8 @@ class Service:
                 live["state"] = "generating"
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
-        engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
+        engine = {"model": self.model, "max_context": self.reported_ctx(),
+                  "images": self.vision is not None or self.native_vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
@@ -5009,7 +5014,7 @@ class Service:
             return round(v / unit, digits) if isinstance(v, (int, float)) else None
 
         busy, ctx = bool(s.get("busy")), self.reported_ctx()
-        images = self.vision is not None
+        images = self.vision is not None or self.native_vision is not None
         return {
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
@@ -5067,6 +5072,9 @@ class Service:
         prompts without adding or replacing one."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
+        pics = getattr(self.native, "pics", None)
+        if pics:
+            prompt = dsv41_vision.expand(prompt, [dsv41_vision.rows(w, h, self.native_vision) for w, h, _ in pics])
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
@@ -5096,6 +5104,8 @@ class Service:
         Clients resend the whole history every turn, so one unreadable tool picture would fail every later request of
         the conversation; a picture the user sends keeps the 400.  A picture that encodes stays in the cache, so the
         prompt's own encode below finds it."""
+        if self.native_vision is not None:   # the dsv41 engine reads the pictures itself (see prepare)
+            return {}
         fetched = {}                     # a URL's bytes, so prepare() does not download the same picture again
         for m in messages:
             content = m.get("content")
@@ -5139,11 +5149,22 @@ class Service:
         if sw is not None:                              # the tokenizer and the template change with the model
             raise EngineStarting(f"the model is being switched to {sw['to']} (a minute or two); try again shortly")
         fetched = self._note_unreadable_tool_images(messages, cancel)
+        if self.native_vision is not None:
+            messages, pics = dsv41_vision.flatten(messages, self.native_vision)
+            self.native.pics = pics
+            if cancel is not None and cancel.is_set():
+                raise ClientGone()
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
+        self.native.pics = None
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
+        if self.native_vision is not None and pics:
+            row_counts = [dsv41_vision.rows(w, h, self.native_vision) for w, h, _ in pics]
+            offsets = dsv41_vision.starts(ids, self.native_vision["token"], row_counts)
+            self.embeddings.path = str(dsv41_vision.write_dsi1(pics, offsets))
+            self.embeddings.keys = []
         images = images_of(messages)
         if images:
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
@@ -7048,7 +7069,7 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "images": svc.vision is not None or svc.native_vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
@@ -7083,7 +7104,7 @@ def make_handler(svc: Service):
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": ["text", "image"] if (svc.vision is not None or svc.native_vision is not None) else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
@@ -8956,6 +8977,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                   "using the V4.1 template so tool calls come back as real calls", flush=True)
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
+                  native_vision=dsv41_vision.detect(cfg) if (cfg.get("arch") or "") == "deepseek41" else None,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
