@@ -1,0 +1,458 @@
+From f1a89997a67d829ddc05acc9561185e12fbb4745 Mon Sep 17 00:00:00 2001
+From: suifei <suifei@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 10:39:37 +0800
+Subject: [PATCH] serve(dsv41): read pictures with the model's own vision tower
+
+DeepSeek-V4.1-Flash is multimodal (config.json: image_token_id 129264,
+vision_config with a 32-layer ViT, patch 14, merge 3, 1024 image tokens at
+most) and the dsv41 engine carries that tower (src/dsv41/ds4_vision.cu) once
+the pack is made with tools/dsv41/pack_gguf.py --mmproj.  Until now the
+server's image path always went through the separate strata-vision encoder
+(llama.cpp mtmd), which has no deepseek41v projector: the family was marked
+images: false and --vision was ignored with a warning.
+
+This teaches serve/server.py to use the engine's own tower for this family
+instead:
+
+* serve/dsv41_vision.py: the picture side - fit a picture to the tower's
+  geometry (14-pixel patches, 3x3 merge, span <= max_image_tokens), the span
+  one picture takes (rows = ceil(h/42) * (ceil(w/42) + 1) + 2, the formula
+  the engine uses), the prompt markers, and the DSI1 pictures file a GENI
+  request names (magic, count, start offset, width, height, RGB).
+* server.py: Service(native_vision=...) - at prepare() the content lists are
+  flattened to text with one marker per picture, the marker becomes a run of
+  the image token before tokenizing, and the request's DSI1 file goes to the
+  engine as GENI's pictures file; the encoder path is skipped, and
+  /health, /metrics and /v1/models report image support.
+* setup.py: the IST-DAS sets fetch mmproj-BF16.gguf (pinned) and pack it, and
+  the family is marked vision: true.
+
+Measured on 4x L20 (2.25 bpw, 1M context): 1008x672 -> 402 prompt tokens,
+one word answer in 1.3 s; the tower encodes a picture in ~100 ms.
+---
+ serve/dsv41_vision.py      | 152 +++++++++++++++++++++++++++++++++++++
+ serve/server.py            |  32 ++++++--
+ serve/test_dsv41_vision.py |  58 ++++++++++++++
+ setup.py                   |  20 +++--
+ 4 files changed, 250 insertions(+), 12 deletions(-)
+ create mode 100644 serve/dsv41_vision.py
+ create mode 100644 serve/test_dsv41_vision.py
+
+diff --git a/serve/dsv41_vision.py b/serve/dsv41_vision.py
+new file mode 100644
+index 00000000000..234662dd532
+--- /dev/null
++++ b/serve/dsv41_vision.py
+@@ -0,0 +1,152 @@
++"""Engine-native vision for DeepSeek-V4.1: pictures the dsv41 engine encodes itself.
++
++The dsv41 engine (src/dsv41/ds4_vision.cu) carries the model's own vision tower, packed from
++the mmproj GGUF (tools/dsv41/pack_gguf.py --mmproj).  A GENI request to it names a DSI1
++pictures file - raw RGB and the prompt offset where each picture's span starts - and the
++engine encodes the pictures itself.  The separate strata-vision encoder (llama.cpp mtmd) has
++no deepseek41v projector, so this family does not use it at all.
++
++A picture reaches the prompt as a run of its image token (<|deepseek_image|>, the
++checkpoint's image_token_id): the tower cuts the picture into 14-pixel patches, merges 3 x 3
++of them and writes one prompt token per merged patch plus one separator per row and two for
++the block, rows = ceil(h/42) * (ceil(w/42) + 1) + 2, at most vision.max_image_tokens (1024).
++"""
++from __future__ import annotations
++
++import base64
++import io
++import re
++import struct
++import tempfile
++import urllib.request
++from pathlib import Path
++
++PATCH = 14
++MERGE = 3
++MAX_TOKENS = 1024
++MARKER = "\x01strata-image\x01"          # where a picture sits in the prompt before tokenizing
++IMAGE_TEXT = "<\uff5cdeepseek_image\uff5c>"   # the model's image token as text
++
++
++def detect(cfg: dict) -> dict | None:
++    """The pack's vision tower as the engine describes it (ds4.txt), or None when the pack has none."""
++    args = cfg.get("args") or []
++    if "--pack" not in args:
++        return None
++    try:
++        pack = Path(args[args.index("--pack") + 1])
++        text = (pack / "ds4.txt").read_text(encoding="utf-8", errors="replace")
++    except (OSError, ValueError):
++        return None
++    tok = re.search(r"^image_token_id\s+(\d+)\s*$", text, re.M)
++    if not tok:
++        return None
++    geo = {k: int(v) for k, v in re.findall(r"^vision\.(\w+)\s+(\d+)\s*$", text, re.M)}
++    return {"token": int(tok.group(1)),
++            "patch": geo.get("patch_size") or PATCH,
++            "merge": geo.get("downsample_ratio") or MERGE,
++            "max_tokens": geo.get("max_image_tokens") or MAX_TOKENS}
++
++
++def rows(width: int, height: int, geo: dict) -> int:
++    """The prompt tokens one picture takes in this tower."""
++    step = (geo.get("patch") or PATCH) * (geo.get("merge") or MERGE)
++    return -(-height // step) * (-(-width // step) + 1) + 2
++
++
++def fit(width: int, height: int, geo: dict) -> tuple[int, int]:
++    """The size the tower takes: both sides on the patch grid, the aspect kept, the span inside max_tokens."""
++    step = (geo.get("patch") or PATCH) * (geo.get("merge") or MERGE)
++    limit = geo.get("max_tokens") or MAX_TOKENS
++    w, h = max(step, int(width)), max(step, int(height))
++    for _ in range(96):
++        if rows(w, h, geo) <= limit:
++            return (w // step) * step, (h // step) * step
++        w, h = int(w * 0.9), int(h * 0.9)
++    return max(step, (w // step) * step), max(step, (h // step) * step)
++
++
++def read_source(source: str) -> bytes:
++    """One picture's bytes: a data: URL, an http(s) URL or a local path."""
++    if source.startswith("data:"):
++        _, _, payload = source.partition(",")
++        return base64.b64decode(payload)
++    if source.startswith(("http://", "https://")):
++        with urllib.request.urlopen(source, timeout=60) as r:
++            return r.read(64 << 20)
++    return Path(source).read_bytes()
++
++
++def prepare(source: str, geo: dict) -> tuple[int, int, bytes]:
++    """(width, height, RGB) at the size the tower takes."""
++    from PIL import Image
++    im = Image.open(io.BytesIO(read_source(source))).convert("RGB")
++    w, h = fit(im.width, im.height, geo)
++    if (im.width, im.height) != (w, h):
++        im = im.resize((w, h), Image.LANCZOS)
++    return w, h, im.tobytes()
++
++
++def flatten(messages: list, geo: dict) -> tuple[list, list]:
++    """Content lists -> text with one MARKER per picture (in order); returns (messages, pictures)."""
++    pics: list = []
++    out: list = []
++    for m in messages:
++        content = m.get("content")
++        if not isinstance(content, list):
++            out.append(m)
++            continue
++        text = []
++        for part in content:
++            if not isinstance(part, dict):
++                continue
++            if part.get("type") == "image" and part.get("source"):
++                pics.append(prepare(part["source"], geo))
++                text.append(MARKER)
++            elif part.get("type") == "text":
++                text.append(part.get("text") or "")
++        msg = dict(m)
++        msg["content"] = "".join(text)
++        out.append(msg)
++    return out, pics
++
++
++def expand(prompt: str, row_counts: list) -> str:
++    """Replace each MARKER with that picture's run of image tokens."""
++    parts = prompt.split(MARKER)
++    if len(parts) - 1 != len(row_counts):
++        raise ValueError("the prompt and its pictures do not match (%d markers, %d pictures)"
++                         % (len(parts) - 1, len(row_counts)))
++    out = [parts[0]]
++    for n, tail in zip(row_counts, parts[1:]):
++        out.append(IMAGE_TEXT * n)
++        out.append(tail)
++    return "".join(out)
++
++
++def starts(ids: list, token: int, row_counts: list) -> list:
++    """The prompt offset of every picture's run of image tokens, in order."""
++    out, i = [], 0
++    for n in row_counts:
++        while i < len(ids) and ids[i] != token:
++            i += 1
++        if i + n > len(ids):
++            raise ValueError("the prompt holds fewer image tokens than its pictures need")
++        out.append(i)
++        i += n
++    return out
++
++
++def write_dsi1(pics: list, starts_: list, directory=None) -> Path:
++    """A DSI1 pictures file: magic, count, then (start i64, width i32, height i32, RGB) per picture."""
++    folder = Path(tempfile.mkdtemp(prefix="strata-dsv41-vision-", dir=directory))
++    path = folder / "pictures.dsi1"
++    with open(path, "wb") as f:
++        f.write(b"DSI1")
++        f.write(struct.pack("<i", len(pics)))
++        for (w, h, rgb), start in zip(pics, starts_):
++            f.write(struct.pack("<q", int(start)))
++            f.write(struct.pack("<i", int(w)))
++            f.write(struct.pack("<i", int(h)))
++            f.write(rgb)
++    return path
+diff --git a/serve/server.py b/serve/server.py
+index 76b5a2c7971..7d854ee9f51 100644
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -84,6 +84,7 @@
+ from serve import responses as responses_api  # noqa: E402
+ from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+ from serve import images as images_api  # noqa: E402
++from serve import dsv41_vision  # noqa: E402
+ 
+ IM_END = "<|im_end|>"
+ IMAGE_PAD = "<|image_pad|>"
+@@ -3821,8 +3822,11 @@ def slot_save_dir(value, base: str | None = None) -> str:
+ class Service:
+     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
+                  vision: Vision | None = None, sampling_defaults: dict | None = None,
+-                 fit_max_tokens: bool = True):
++                 fit_max_tokens: bool = True, native_vision: dict | None = None):
+         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
++        # DeepSeek-V4.1: the pack's own vision tower, the dsv41 engine encodes the pictures (no strata-vision)
++        self.native_vision = native_vision
++        self.native = threading.local()
+         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
+         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
+         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
+@@ -4639,7 +4643,8 @@ def metrics(self, all_requests=False) -> dict:
+                 live["state"] = "generating"
+         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
+             live["replicas"] = self.engine.replica_view()
+-        engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
++        engine = {"model": self.model, "max_context": self.reported_ctx(),
++                  "images": self.vision is not None or self.native_vision is not None,
+                   **dict(getattr(self.engine, "info", {}) or {})}
+         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+@@ -4700,7 +4705,7 @@ def scaled(v, unit, digits=0):
+             return round(v / unit, digits) if isinstance(v, (int, float)) else None
+ 
+         busy, ctx = bool(s.get("busy")), self.reported_ctx()
+-        images = self.vision is not None
++        images = self.vision is not None or self.native_vision is not None
+         return {
+             "service": "strata", "model": self.model,
+             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
+@@ -4756,6 +4761,9 @@ def encode_prompt(self, messages, tools, kwargs, store: bool = True) -> list[int
+         prompts without adding or replacing one."""
+         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
+         prompt = self.render_prompt(marked, marked_tools, kwargs)
++        pics = getattr(self.native, "pics", None)
++        if pics:
++            prompt = dsv41_vision.expand(prompt, [dsv41_vision.rows(w, h, self.native_vision) for w, h, _ in pics])
+         plain = ()
+         if changed:
+             prompt, plain = unmark_think_literals(prompt, self.literals)
+@@ -4785,6 +4793,8 @@ def _note_unreadable_tool_images(self, messages, cancel=None):
+         Clients resend the whole history every turn, so one unreadable tool picture would fail every later request of
+         the conversation; a picture the user sends keeps the 400.  A picture that encodes stays in the cache, so the
+         prompt's own encode below finds it."""
++        if self.native_vision is not None:   # the dsv41 engine reads the pictures itself (see prepare)
++            return {}
+         fetched = {}                     # a URL's bytes, so prepare() does not download the same picture again
+         for m in messages:
+             content = m.get("content")
+@@ -4825,11 +4835,22 @@ def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, c
+         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
+         # between pictures and raise ClientGone
+         fetched = self._note_unreadable_tool_images(messages, cancel)
++        if self.native_vision is not None:
++            messages, pics = dsv41_vision.flatten(messages, self.native_vision)
++            self.native.pics = pics
++            if cancel is not None and cancel.is_set():
++                raise ClientGone()
+         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
++        self.native.pics = None
+         if force and kwargs.get("enable_thinking", True) is False:
+             ids = ids + self.tok.encode(force, parse_special=True)
+         self.embeddings.path = None
+         self.embeddings.keys = None
++        if self.native_vision is not None and pics:
++            row_counts = [dsv41_vision.rows(w, h, self.native_vision) for w, h, _ in pics]
++            offsets = dsv41_vision.starts(ids, self.native_vision["token"], row_counts)
++            self.embeddings.path = str(dsv41_vision.write_dsi1(pics, offsets))
++            self.embeddings.keys = []
+         images = images_of(messages)
+         if images:
+             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
+@@ -6635,7 +6656,7 @@ def do_GET(self):
+                 self.wfile.write(body)
+             elif path in ("/health", "/api/health"):
+                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
+-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
++                                 "images": svc.vision is not None or svc.native_vision is not None, "api_key": bool(svc.api_key),
+                                  "image_generation": svc.images is not None,
+                                  "loaded": svc.loaded(), "service": "strata"})
+             elif path.startswith("/v1/images/files/"):
+@@ -6670,7 +6691,7 @@ def do_GET(self):
+                     loaded = svc.loaded()
+                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
+                              "meta": {"n_ctx": svc.reported_ctx()},
+-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
++                             "architecture": {"input_modalities": ["text", "image"] if (svc.vision is not None or svc.native_vision is not None) else ["text"],
+                                               "output_modalities": ["text"]}}
+                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
+                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
+@@ -8439,6 +8460,7 @@ def request_stop(reason: str):
+                   "using the V4.1 template so tool calls come back as real calls", flush=True)
+     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+                   model_name=default_model_name(cfg), vision=vision,
++                  native_vision=dsv41_vision.detect(cfg) if (cfg.get("arch") or "") == "deepseek41" else None,
+                   sampling_defaults=sampling_defaults,
+                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+     svc.launch_attestation = launch_attestation
+diff --git a/serve/test_dsv41_vision.py b/serve/test_dsv41_vision.py
+new file mode 100644
+index 00000000000..0aaddb73bd8
+--- /dev/null
++++ b/serve/test_dsv41_vision.py
+@@ -0,0 +1,58 @@
++"""The picture side of the dsv41 engine's own vision tower: geometry, marker expansion, DSI1."""
++import struct
++import tempfile
++import unittest
++from pathlib import Path
++
++from serve import dsv41_vision as V
++
++GEO = {"token": 129264, "patch": 14, "merge": 3, "max_tokens": 1024}
++
++
++class Geometry(unittest.TestCase):
++    def test_rows_match_the_engine(self):
++        # measured with: strata-dsv41 --encode-image <rgb> --size WxH --dump-image out
++        for (w, h), want in (((420, 420), 112), ((700, 700), 308), ((1008, 672), 402), ((1540, 700), 648)):
++            self.assertEqual(V.rows(w, h, GEO), want, (w, h))
++
++    def test_fit_keeps_the_patch_grid_and_the_budget(self):
++        for w, h in ((1024, 701), (4000, 3000), (100, 5000), (37, 37)):
++            fw, fh = V.fit(w, h, GEO)
++            self.assertEqual(fw % 42, 0)
++            self.assertEqual(fh % 42, 0)
++            self.assertLessEqual(V.rows(fw, fh, GEO), GEO["max_tokens"], (w, h, fw, fh))
++
++
++class Prompt(unittest.TestCase):
++    def test_expand_puts_one_run_per_picture(self):
++        prompt = "a" + V.MARKER + "b" + V.MARKER + "c"
++        out = V.expand(prompt, [3, 2])
++        self.assertEqual(out, "a" + V.IMAGE_TEXT * 3 + "b" + V.IMAGE_TEXT * 2 + "c")
++
++    def test_expand_refuses_a_mismatch(self):
++        with self.assertRaises(ValueError):
++            V.expand("x" + V.MARKER, [3, 2])
++
++    def test_starts_follow_the_prompt_order(self):
++        ids = [5, 129264, 129264, 129264, 6, 129264, 129264]
++        self.assertEqual(V.starts(ids, 129264, [3, 2]), [1, 5])
++        with self.assertRaises(ValueError):
++            V.starts(ids, 129264, [3, 2, 1])
++
++
++class Dsi1(unittest.TestCase):
++    def test_file_layout(self):
++        pics = [(42, 42, bytes(42 * 42 * 3)), (84, 42, bytes(84 * 42 * 3))]
++        with tempfile.TemporaryDirectory() as d:
++            path = V.write_dsi1(pics, [7, 30], directory=d)
++            raw = Path(path).read_bytes()
++        self.assertEqual(raw[:4], b"DSI1")
++        self.assertEqual(struct.unpack("<i", raw[4:8])[0], 2)
++        start = struct.unpack("<q", raw[8:16])[0]
++        w, h = struct.unpack("<ii", raw[16:24])
++        self.assertEqual((start, w, h), (7, 42, 42))
++        self.assertEqual(len(raw), 8 + (8 + 8 + 42 * 42 * 3) + (8 + 8 + 84 * 42 * 3))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/setup.py b/setup.py
+index 440bfc181e6..bf4f9f18643 100644
+--- a/setup.py
++++ b/setup.py
+@@ -687,6 +687,7 @@ def ms_meta(repo: str, path: str):
+ DSV41_ISTA_ENGRAM = "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf"
+ DSV41_ISTA_SHARD = "DeepSeek-V4.1-Flash-1017-GSQ-RCO-{quant}-{i:05d}-of-00004.gguf"
+ DSV41_DSPARK = "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf"
++DSV41_MMPROJ = "mmproj-BF16.gguf"                 # the model's vision tower (clip, projector deepseek41v): the dsv41 engine reads pictures itself
+ DSV41_ISTA_FILES = {
+     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00004.gguf": (39358830464, "6e3f0d5ff53d00428ec32c079db9e8255cb410ccaa435e5342aaa8a47fe1339d"),
+     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00004.gguf": (39176113248, "34d68c99fdae9948f9f0af0dafe308e805ce0a78d2c48641b24cc57242fdc0af"),
+@@ -726,6 +727,7 @@ def ms_meta(repo: str, path: str):
+ # the files every official set shares (name -> where it comes from); they live in models/deepseek-v4.1-flash-shared, once
+ DSV41_SHARED = {
+     DSV41_ISTA_ENGRAM: hf(DSV41_ISTA_REPO),
++    DSV41_MMPROJ: hf(DSV41_REPO),
+     DSV41_SHARD.format(i=1): hf(DSV41_REPO) + "UD-Q8_K_XL/",      # only its metadata is read (pack_gguf --engram-meta)
+     DSV41_DSPARK: hf(DSV41_REPO),
+ }
+@@ -741,7 +743,7 @@ def ms_meta(repo: str, path: str):
+                    "models": {"UD-Q8_K_XL": {"about": "Unsloth Dynamic 8-bit: the experts in MXFP4 as DeepSeek made them, the rest "
+                                                        "in BF16 (the checkpoint's own precision)",
+                               "ram_gb": 306, "shards": [DSV41_SHARD.format(i=i) for i in range(1, 10)]}},
+-                   "sha256": DSV41_ALL_FILES, "vision": False}
++                   "sha256": DSV41_ALL_FILES, "vision": True}
+ }
+ # The official sets first (a normal PC), Unsloth's 508 GB set last.  Each model: its shards, the sub-folder they are in at the repository
+ # (and in a --gguf-dir folder), the files shared with the other set ("shared"), the pack recipe and the shipped expert profile.
+@@ -753,21 +755,21 @@ def ms_meta(repo: str, path: str):
+                  "perplexity (code and agent work 5-9%)",
+         "ram_gb": 40, "recipe": "ista", "subdir": None, "legacy_subdir": "2.00bpw", "profile": "profile-2.00.bin", "hf": hf(DSV41_ISTA_REPO),
+         "shards": [DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=i) for i in range(1, 5)],
+-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
++        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK, DSV41_MMPROJ]},
+     "IST-DAS-2.25bpw": {
+         "label": "IST-DAS 2.25 bpw",
+         "about": "the better official version: 155 GB of model + 111 GB n-gram table + 8 GB drafter (274 GB of disk, 17 GB more than "
+                  "2.00). About the same speed; quality about 7.3% above the original model's perplexity (code and agent work 2-3%)",
+         "ram_gb": 44, "recipe": "ista", "subdir": None, "legacy_subdir": "2.25bpw", "profile": "profile-2.25.bin", "hf": hf(DSV41_ISTA_REPO),
+         "shards": [DSV41_ISTA_SHARD.format(quant="IQ2_XS", i=i) for i in range(1, 5)],
+-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
++        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK, DSV41_MMPROJ]},
+     "IST-DAS-1.75bpw": {
+         "label": "IST-DAS 1.75 bpw",
+         "about": "the smallest official version: 121 GB of model + 111 GB n-gram table + 8 GB drafter (239 GB of disk, 18 GB less than 2.00). Runs "
+                  "where 2.00 is tight (a 12 GB card and 32-40 GB of RAM). Smallest: fine for code and agent work, noticeably weaker on plain prose; pick 2.00 if it fits",
+         "ram_gb": 34, "recipe": "ista", "subdir": None, "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_ISTA_REPO),
+         "shards": [DSV41_ISTA_SHARD.format(quant="IQ1_M", i=i) for i in range(1, 5)],
+-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
++        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK, DSV41_MMPROJ]},
+     "UD-Q8_K_XL": {
+         "label": "Unsloth UD-Q8_K_XL",
+         "about": "Unsloth Dynamic 8-bit: the experts in MXFP4 as DeepSeek made them, the rest in BF16 (the checkpoint's own precision); "
+@@ -8007,14 +8009,16 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path) -> Path:
+     return shared / name
+ 
+ 
+-def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark: Path, pack: Path) -> list:
++def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark: Path, pack: Path,
++                   mmproj: Path | None = None) -> list:
+     """The pack recipe for an official IST-DAS set - this and nothing else: another one (--skip-tensors / --dense-override + engram_fold)
+     packs without an error and gives garbage text (P2003, 2026-10-23).  The drafter's noise token (128799) and markov rank (256) are stated:
+     the IST-DAS GGUFs do not carry them, and a pack with noise id 0 drafts deep less often (decode ~10% slower with DSpark).  --shards names the four files, so an Engram or another
+     set in the same folder is not read as part of the model."""
+     return [sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--shards", *[Path(n).name for n in shards],
+             "--engram", str(engram), "--engram-meta", str(meta), "--dspark-gguf", str(dspark),
+-            "--dspark-noise-token", "128799", "--dspark-markov-rank", "256", "--out", str(pack)]
++            "--dspark-noise-token", "128799", "--dspark-markov-rank", "256",
++            *(["--mmproj", str(mmproj)] if mmproj is not None else []), "--out", str(pack)]
+ 
+ 
+ def dsv41_engine_env(lib_dirs) -> dict:
+@@ -8207,7 +8211,9 @@ def partial(f: Path) -> int:
+             have_pack = False
+     if not have_pack:
+         if ista:
+-            run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shared[1], shared[2], pack))
++            named = {f.name: f for f in shared}
++            run(dsv41_pack_cmd(folder, [f.name for f in shards], named[DSV41_ISTA_ENGRAM],
++                               named[DSV41_SHARD.format(i=1)], named[DSV41_DSPARK], pack, named.get(DSV41_MMPROJ)))
+         else:
+             run([sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--out", str(pack)])
+     if ista:

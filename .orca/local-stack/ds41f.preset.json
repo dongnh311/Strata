@@ -1,0 +1,43 @@
+{
+ "exe": "D:\\GitHub\\Strata\\engine-dsv41\\0.1.51-windows-x86_64-cuda-cuda13\\strata-dsv41.exe",
+ "args": [
+  "--pack",
+  "D:\\GitHub\\Strata-data\\packs\\deepseek-v4.1-flash-ist-das-1.75bpw",
+  "--max-context",
+  "262144",
+  "--eos",
+  "1",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--ssd-cache",
+  "36"
+ ],
+ "cwd": "C:\\Users\\ADMIN\\AppData\\Local\\Strata\\terminal\\0.1.51",
+ "tokenizer": "D:\\GitHub\\Strata-data\\packs\\deepseek-v4.1-flash-ist-das-1.75bpw\\tokenizer",
+ "model_name": "deepseek-v4.1-flash",
+ "arch": "deepseek41",
+ "log": "C:\\Users\\ADMIN\\AppData\\Local\\Strata\\launch\\ds41f.engine.log",
+ "lib_dirs": [
+  "D:\\GitHub\\Strata\\engine-dsv41\\0.1.51-windows-x86_64-cuda-cuda13"
+ ],
+ "port": 8080,
+ "engine_ready_s": 3600,
+ "gpu": 0,
+ "gpus_asked": true,
+ "args_written": [
+  "--pack",
+  "D:\\GitHub\\Strata-data\\packs\\deepseek-v4.1-flash-ist-das-1.75bpw",
+  "--max-context",
+  "262144",
+  "--eos",
+  "1",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65"
+ ],
+ "host": "127.0.0.1",
+ "open_browser": false
+}

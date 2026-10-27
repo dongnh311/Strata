@@ -1,0 +1,118 @@
+From 2fe7ee78e9bdb8f33880982761153de262eaba39 Mon Sep 17 00:00:00 2001
+From: JumpEggKiller <66893804+JumpEggKiller@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 15:19:36 +0800
+Subject: [PATCH] fix(launch): preserve DeepSeek advanced option values and
+ reserve alias
+
+---
+ docs/TERMINAL_LAUNCH.md                       |  1 +
+ strata_cli/launch/runner.py                   |  3 ++
+ strata_cli/launch/settings.py                 |  6 ++-
+ tests/terminal/test_launch_dsv41_overrides.py | 48 +++++++++++++++++++
+ 4 files changed, 56 insertions(+), 2 deletions(-)
+ create mode 100644 tests/terminal/test_launch_dsv41_overrides.py
+
+diff --git a/docs/TERMINAL_LAUNCH.md b/docs/TERMINAL_LAUNCH.md
+index 3d5834d9dde..a33b9b9560d 100644
+--- a/docs/TERMINAL_LAUNCH.md
++++ b/docs/TERMINAL_LAUNCH.md
+@@ -140,6 +140,7 @@ strata launch --family deepseek41 --model ist-das-2.00bpw
+ - `--speed faster|full` picks how many of the model's 6 experts it uses per word. Faster uses 5 (a small quality change, usually not noticeable) and is the default on a PC with 16 GB of graphics memory or less and on PCs whose graphics share the computer's memory. Full uses all 6. `--full-quality` is the same as `--speed full`. Both need DeepSeek engine 0.1.50 or newer, which `strata launch` fetches. The engine's own flag is `--experts N`.
+ - It answers one request at a time. `--parallel` above 1 is ignored with a note.
+ - It cannot read pictures, so pictures are off and `--vision on` is ignored with a note.
++- `--set dspark=on|off|none|auto` passes the selected mode to the DeepSeek engine. `--set vram_reserve_mib=1100` uses its `--reserve-mib` option; `--set reserve-mib=1100` also works. The Qwen reserve option stays `--vram-reserve-mib`.
+ - `--tune` runs DeepSeek's own short tuner (drafter on or off, CPU threads), not the Qwen tuner.
+ - `--model-path DIR` starts from the shards you already have.
+ - `--plan` shows where the model goes on your cards and how much is held in RAM.
+diff --git a/strata_cli/launch/runner.py b/strata_cli/launch/runner.py
+index 588534f96d9..b75f1da19be 100644
+--- a/strata_cli/launch/runner.py
++++ b/strata_cli/launch/runner.py
+@@ -521,6 +521,9 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
+         cfg["mtp"] = True
+     if s.extra:
+         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
++        if s.family == "deepseek41":
++            a_changes = {("--reserve-mib" if key == "--vram-reserve-mib" else key): value
++                         for key, value in a_changes.items()}
+         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
+         if e_changes:
+             cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
+diff --git a/strata_cli/launch/settings.py b/strata_cli/launch/settings.py
+index 0345ce1b81a..5b7f0404518 100644
+--- a/strata_cli/launch/settings.py
++++ b/strata_cli/launch/settings.py
+@@ -269,7 +269,7 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
+ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[dict[str, Any], dict[str, str | None]]:
+     """Turn the Advanced table's values into `tune_knobs.apply_to_argv` changes and environment changes.
+ 
+-    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value."""
++    DSpark takes a literal mode. Other flags keep the Advanced table's on/off shorthand."""
+     args: dict[str, Any] = {}
+     env: dict[str, str | None] = {}
+     for key, value in extra.items():
+@@ -277,7 +277,9 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
+             low = value.lower()
+             if low == "" and key not in bool_flags:
+                 continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
+-            if key in bool_flags or low in ("on", "true", "yes", ""):
++            if key == "--dspark":                  # on/off/none are engine modes, not flag-presence shorthand (#3959)
++                args[key] = value
++            elif key in bool_flags or low in ("on", "true", "yes", ""):
+                 args[key] = None if low in ("off", "false", "no", "none") else True
+             elif low in ("off", "false", "no", "none"):
+                 args[key] = None
+diff --git a/tests/terminal/test_launch_dsv41_overrides.py b/tests/terminal/test_launch_dsv41_overrides.py
+new file mode 100644
+index 00000000000..1323f0bf383
+--- /dev/null
++++ b/tests/terminal/test_launch_dsv41_overrides.py
+@@ -0,0 +1,48 @@
++"""Advanced DeepSeek settings reach the engine argv without starting it."""
++import unittest
++
++from strata_cli.launch import settings as S
++from strata_cli.launch.runner import derive_config
++from strata_control.tune_knobs import BOOL_FLAGS
++
++
++class DeepSeekOverrides(unittest.TestCase):
++    def config(self, pairs, family="deepseek41"):
++        base = {"exe": "strata-dsv41", "args": ["--pack", "model-pack", "--dspark", "auto", "--experts", "6"]}
++        settings = S.LaunchSettings(family=family, extra=S.settings_from_pairs(pairs))
++        return derive_config(base, settings, bool_flags=BOOL_FLAGS)["args"]
++
++    def test_dspark_modes_keep_their_values(self):
++        for mode in ("on", "off", "none", "auto"):
++            with self.subTest(mode=mode):
++                self.assertEqual(self.config([f"dspark={mode}"]),
++                                 ["--pack", "model-pack", "--experts", "6", "--dspark", mode])
++
++    def test_reserve_aliases_reach_deepseek(self):
++        for key in ("vram_reserve_mib", "vram-reserve-mib", "reserve-mib"):
++            with self.subTest(key=key):
++                args = self.config([f"{key}=1100"])
++                self.assertEqual(args[-2:], ["--reserve-mib", "1100"])
++                self.assertNotIn("--vram-reserve-mib", args)
++
++    def test_combined_overrides_replace_existing_reserve(self):
++        base = {"exe": "strata-dsv41", "args": ["--dspark", "auto", "--reserve-mib", "600"]}
++        settings = S.LaunchSettings(family="deepseek41", extra=S.settings_from_pairs(
++            ["dspark=on", "vram_reserve_mib=1100"]))
++        self.assertEqual(derive_config(base, settings, bool_flags=BOOL_FLAGS)["args"],
++                         ["--dspark", "on", "--reserve-mib", "1100"])
++        self.assertEqual(base["args"], ["--dspark", "auto", "--reserve-mib", "600"])
++
++    def test_qwen_keeps_its_reserve_flag(self):
++        self.assertEqual(self.config(["vram_reserve_mib=1100"], "qwen")[-2:],
++                         ["--vram-reserve-mib", "1100"])
++
++    def test_default_dspark_is_unchanged(self):
++        self.assertEqual(self.config([]),
++                         ["--pack", "model-pack", "--dspark", "auto", "--experts", "6"])
++
++    def test_boolean_and_environment_settings_keep_their_behavior(self):
++        args, env = S.as_argv_changes(S.settings_from_pairs(
++            ["kv-grow=on", "no-pool=off", "STRATA_TEST=off"]), BOOL_FLAGS)
++        self.assertEqual(args, {"--kv-grow": True, "--no-pool": None})
++        self.assertEqual(env, {"STRATA_TEST": None})

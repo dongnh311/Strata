@@ -1,0 +1,105 @@
+{
+ "models": [],
+ "exe": "D:\\GitHub\\Strata-data\\build-v026\\strata.exe",
+ "args": [
+  "--pack",
+  "D:\\GitHub\\Strata-data\\packs\\q2_0",
+  "--native",
+  "D:\\GitHub\\Strata-data\\models\\Q2_0\\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "--ple-gguf",
+  "D:\\GitHub\\Strata-data\\models\\Q2_0\\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+  "--expert-profile",
+  "D:\\GitHub\\Strata\\data\\expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.7",
+  "--mtp",
+  "D:\\GitHub\\Strata-data\\mtp\\rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "q4_0",
+  "--kv-resident",
+  "32768",
+  "--conversation-cache-mib",
+  "10078",
+  "--conversation-cache-slots",
+  "6",
+  "--conversation-cache-min-tokens",
+  "8000",
+  "--conversation-cache-min-free-mib",
+  "1536",
+  "--control-vector-scaled",
+  "D:\\GitHub\\Strata\\data\\experimental-speed-projection\\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+  "--control-vector-layer-range",
+  "4",
+  "44",
+  "--cvec-mode",
+  "project",
+  "--cvec-dir",
+  "per-layer",
+  "--vision",
+  "--vram-reserve-mib",
+  "1472",
+  "--pcie-frac",
+  "0.00"
+ ],
+ "cwd": "D:\\GitHub\\Strata",
+ "tokenizer": "D:\\GitHub\\Strata-data\\packs\\q2_0\\tokenizer",
+ "model_name": "qwen38-q2_0-refusal",
+ "log": "D:\\GitHub\\Strata\\strata-q2_0-v144-refusal.log",
+ "lib_dirs": [
+  "D:\\GitHub\\Strata\\.venv\\Lib\\site-packages\\nvidia\\cu13\\bin\\x86_64"
+ ],
+ "port": 18080,
+ "host": "0.0.0.0",
+ "api_key": "PASTE_LOCAL_API_KEY",
+ "gpu": 0,
+ "gpus_asked": true,
+ "mcp_servers": {
+  "gateway": {
+   "url": "http://127.0.0.1:8090/mcp"
+  },
+  "image": {
+   "url": "http://127.0.0.1:8096/mcp"
+  }
+ },
+ "mcp": {
+  "timeout_s": 60,
+  "max_result_chars": 6000,
+  "max_rounds": 6
+ },
+ "strip_cjk": true,
+ "min_free_vram_mib": 9000,
+ "before_load": [
+  "curl.exe",
+  "-s",
+  "-m",
+  "110",
+  "http://127.0.0.1:8096/gate?wait=100"
+ ],
+ "allowed_hosts": [
+  "pc-dik-win.tail1b3f7b.ts.net",
+  "desktop-xc5jt9.tail1b3f7b.ts.net"
+ ],
+ "vision": {
+  "exe": "D:\\GitHub\\Strata\\engine\\strata-vision.exe",
+  "mmproj": "D:\\GitHub\\Strata-data\\models\\mmproj-Qwen3.8-Flash-Next-Uncensored-Q8_0.gguf",
+  "model": "D:\\GitHub\\Strata-data\\models\\Q2_0\\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "gpu": false,
+  "threads": 12,
+  "max_tokens": 300
+ },
+ "expert_profile_save": "expert-profile-learned-q2_0.bin",
+ "aliases": [
+  "qwen38-orca-q2k-refusal"
+ ],
+ "reasoning_budget_tokens": 12288,
+ "reasoning_effort": "low",
+ "effort_position": "end"
+}
