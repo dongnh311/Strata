@@ -61,6 +61,8 @@ namespace {
 constexpr int NT = 3, E = 7;
 constexpr int64_t H = 2560, FF = 640;
 
+std::string type_label(int t);   // defined below; used by the print in check_blob
+
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
                cudaStream_t s) {
@@ -488,9 +490,25 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
     const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
     const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
     std::printf("%-9s %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", label.c_str(),
-                ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
+                type_label(f.gu_type).c_str(), type_label(f.d_type).c_str(), f.bytes, ec, eg, ecg,
                 ok ? "ok" : "FAIL");
     return failures + (ok ? 0 : 1);
+}
+
+// The trellis ids sit above GGML_TYPE_COUNT (see type_of): ggml_type_name has no entry for them and returns a pointer
+// outside its table, so every print goes through this label instead.  Numeric ids stay visible for a new format.
+std::string type_label(int t) {
+    switch (t) {
+        case 144: return "TQ2_T";
+        case 145: return "TQK6";
+        case 146: return "TQK7";
+        case 147: return "TQP5";
+        case 148: return "TQP6";
+        case 149: return "TQP7";
+        default: break;
+    }
+    const char* n = t >= 0 && t < GGML_TYPE_COUNT ? ggml_type_name((ggml_type) t) : nullptr;
+    return n ? n : "type " + std::to_string(t);
 }
 
 int type_of(std::string name) {
@@ -1028,6 +1046,7 @@ int check_load(const char* pack, const char* gguf) {
     int failures = 0;
     std::string err;
     auto fail = [&](const std::string& m) { std::printf("  FAIL %s\n", m.c_str()); ++failures; };
+    { std::ifstream f(gguf, std::ios::binary); if (!f) { fail(std::string("cannot open the GGUF: ") + gguf); return failures; } }
     if (!cpu::expert_layout_load(pack, 48, 512, err)) { fail("expert_layout_load: " + err); return failures; }
     const auto& lay = cpu::expert_layout();
     const auto& hs = cpu::hadamard_spec();
@@ -1039,9 +1058,10 @@ int check_load(const char* pack, const char* gguf) {
             fail("layer " + std::to_string(l) + ": no GPU expert kernels for " + std::to_string(f.gu_type) + "/" +
                  std::to_string(f.d_type));
     }
+    if (lay.fmt.empty()) { fail("expert_layout_load returned no layers"); return failures; }
     std::printf("  experts: native_experts.txt v%d, %zu layers (%s/%s ...), %.2f GiB; hadamard block %d, %d layers folded\n",
-                lay.version, lay.fmt.size(), ggml_type_name((ggml_type) lay.fmt[0].gu_type),
-                ggml_type_name((ggml_type) lay.fmt[0].d_type), lay.total / 1073741824.0, hs.block, folded);
+                lay.version, lay.fmt.size(), type_label(lay.fmt[0].gu_type).c_str(),
+                type_label(lay.fmt[0].d_type).c_str(), lay.total / 1073741824.0, hs.block, folded);
     if (!strata::core::check_experts_gguf(gguf, lay, err)) fail("check_experts_gguf: " + err);
     else std::printf("  check_experts_gguf: ok\n");
     const std::vector<std::string> shards = strata::gguf_split_paths(gguf);
@@ -1067,8 +1087,14 @@ int check_load(const char* pack, const char* gguf) {
         if (!ok) fail(name + " (" + t->type_name() + "): served from the GGUF but no kernel takes it");
         else ++ok_rows;
     }
-    std::printf("  index: %d tensors served from the GGUF, %d with a kernel (incl. token_embd %s, output %s)\n",
-                from_gguf, ok_rows, model.find("token_embd.weight")->type_name(), model.find("output.weight")->type_name());
+    const strata::TensorInfo* tok = model.find("token_embd.weight");
+    const strata::TensorInfo* out = model.find("output.weight");
+    if (!tok || !out) {
+        fail(std::string("index: token_embd/output missing from the GGUF (file missing or unreadable)"));
+    } else {
+        std::printf("  index: %d tensors served from the GGUF, %d with a kernel (incl. token_embd %s, output %s)\n",
+                    from_gguf, ok_rows, tok->type_name(), out->type_name());
+    }
     size_t pat = 0;
     if (model.find("per_layer_token_embd.weight", &pat)) {
         strata::kernels::PleTable ple;
