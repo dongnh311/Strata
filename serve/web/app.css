@@ -355,3 +355,26 @@ main { flex: 1; min-height: 0; display: flex; }
                   font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
 
 
+
+/* attach_file: a pasted file is an open card, not a collapsed tool block */
+.st-attach { border: 1px solid var(--st-line); border-radius: var(--st-r-sm); background: var(--st-code-bg);
+             margin: 8px 0; overflow: hidden; }
+.st-attach__head { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+                   border-bottom: 1px solid var(--st-line-soft); }
+.st-attach__name { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); color: var(--st-ink-soft);
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-attach__pre { margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto; font-family: var(--st-font-mono);
+                  font-size: var(--st-fs-xs); line-height: var(--st-lh-tight); white-space: pre-wrap;
+                  word-break: break-word; }
+.st-attach__head .st-icon { flex: none; }
+
+/* context meter (fork): the last request's prompt size from /slots */
+.st-ctx { display: inline-flex; align-items: center; gap: 6px; margin-right: var(--st-s-2); }
+.st-ctx__bar { width: 56px; height: 6px; border-radius: 999px; background: var(--st-surface-2); overflow: hidden; }
+.st-ctx__bar > span { display: block; height: 100%; border-radius: inherit;
+                      background: var(--st-accent); transition: width var(--st-dur) var(--st-ease); }
+.st-ctx--warn .st-ctx__bar > span { background: var(--st-warn); }
+.st-ctx--danger .st-ctx__bar > span { background: var(--st-danger); }
+.st-ctx__text { font-size: var(--st-fs-xs); color: var(--st-ink-soft); font-variant-numeric: tabular-nums;
+                white-space: nowrap; }
+@media (max-width: 720px) { .st-ctx__text { display: none; } }

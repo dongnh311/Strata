@@ -856,6 +856,21 @@ function toolHtml(t, k) {
   const label = labelOf();
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
+  // attach_file: the file is pasted INTO the message - a card that is open by default, not a collapsed tool block
+  if (t.tool === "attach_file" && t.ok && t.result != null) {
+    const nl = t.result.indexOf("\n");
+    const head = nl >= 0 ? t.result.slice(0, nl) : "";
+    const kb = head.match(/\(([\d,]+) bytes\):\s*$/);
+    const ki = head.indexOf("k\u00E8m ");
+    const path = ki >= 0 ? head.slice(ki + 4).replace(/\s*\([\d,]+ bytes\):\s*$/, "") : "";
+    const name = path.split(/[\\/]/).pop() || "file";
+    return `<div class="st-attach" data-tool="${k}">` +
+      `<div class="st-attach__head">${icon("attach", "st-icon st-icon--sm")}` +
+      `<span class="st-attach__name" title="${esc(path)}">${esc(name)}` +
+      `${kb ? ` <span class="muted small">${esc(kb[1])} bytes</span>` : ""}</span>` +
+      `${t.ms != null ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}</div>` +
+      `<pre class="st-attach__pre">${esc(nl >= 0 ? t.result.slice(nl + 1) : "")}</pre></div>`;
+  }
   let body = "";
   if (t.open) {
     body = `<div class="tool-call__label">${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
@@ -1323,6 +1338,30 @@ $("input").addEventListener("keydown", (e) => {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", () => { autosize(); slashUpdate(); });
 
+// context meter (fork): /slots carries the last request's prompt size next to n_ctx
+let ctxMeter = null;
+async function refreshCtx() {
+  try {
+    const s = ((await (await fetch("slots", {headers: headers()})).json())[0]) || {};
+    const used = Math.max(0, +s.n_prompt_tokens || 0), n = +s.n_ctx || 0;
+    ctxMeter = n > 0 ? {used, n_ctx: n} : null;
+  } catch (e) { ctxMeter = null; }
+  renderCtx();
+}
+function renderCtx() {
+  const el = $("ctx-meter");
+  if (!ctxMeter) { el.hidden = true; return; }
+  const {used, n_ctx} = ctxMeter;
+  const pct = Math.min(100, Math.round((used / n_ctx) * 100));
+  const free = Math.max(0, n_ctx - used);
+  const tone = pct >= 85 ? "st-ctx--danger" : pct >= 60 ? "st-ctx--warn" : "";
+  el.className = `st-ctx ${tone}`;
+  el.title = `${fmt(used)} prompt tokens on the last request · ${fmt(free)} free · ${fmt(n_ctx)} total`;
+  el.hidden = false;
+  el.innerHTML = `<span class="st-ctx__bar"><span style="width:${pct}%"></span></span>` +
+                 `<span class="st-ctx__text">${ctxfmt(free)} of ${ctxfmt(n_ctx)} free</span>`;
+}
+
 // "/" opens a small command palette above the composer; only words that name a command run.
 const SLASH_COMMANDS = [{cmd: "clear", desc: "Clear the chat (the same as the New chat button)"}];
 const slash = $("slash");
@@ -1614,7 +1653,9 @@ async function start() {
   renderChat();
   const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
   if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } })
+  .then(refreshCtx).catch(() => {});
+setInterval(() => refreshCtx(), 30000);
   showTab(location.hash.slice(1) || "chat");
   poll();
   requestAnimationFrame(fitHeader);
