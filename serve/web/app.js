@@ -343,13 +343,15 @@ $("unload-btn").onclick = async () => {
 // ------------------------------------------------------------------ model picker (fork)
 // One model at a time: /metrics lists what the router serves; POST v1/load asks it to switch.
 let modelNow = null, modelsSig = "", switchErrAt = null;
+const MODEL_LABELS = {"qwen38-q2_0-refusal": "Qwen 3.8 · Q2_0", "deepseek-v4.1-flash": "DeepSeek V4.1"};
+function modelLabel(name) { return MODEL_LABELS[name] || String(name || "").replace(/[-_]/g, " "); }
 function renderModels(ms) {
   const list = (ms && ms.available) || [], sel = $("model-select"), sw = ms && ms.switching;
   $("model-pick").hidden = list.length < 2;
   if (!ms) return;
   if (!sw) {
     if (modelNow && ms.current !== modelNow) {
-      toast("success", tr("model.switched", "Model switched"), `${ms.current} answers now.`, 5000);
+      toast("success", tr("model.switched", "Model switched"), `${modelLabel(ms.current)} answers now.`, 5000);
       loadHealth();
     }
     modelNow = ms.current;
@@ -358,11 +360,12 @@ function renderModels(ms) {
   const sig = `${list.join("\n")}|${shown}`;
   if (sig !== modelsSig && document.activeElement !== sel) {
     modelsSig = sig;
-    sel.innerHTML = list.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    sel.innerHTML = list.map((n) => `<option value="${esc(n)}" title="${esc(n)}">${esc(modelLabel(n))}</option>`).join("");
     sel.value = shown;
   }
   sel.disabled = !!sw;
-  $("model-pick").title = `Model: ${shown} (one at a time)`;
+  sel.title = shown || "";
+  $("model-pick").title = `Model: ${modelLabel(shown)} (${shown})`;
   const err = ms.last_error;
   if (err && err.at !== switchErrAt) {
     const msg = err.message.length > 280 ? `${err.message.slice(0, 280)}…` : err.message;
@@ -387,8 +390,8 @@ $("model-select").onchange = () => {
   sel.value = cur;
   sel.blur();
   if (!want || want === cur) return;
-  toast("warn", `Switch to ${want}?`, `${cur} is unloaded first: one model fits at a time. Every app that uses this ` +
-        `server gets ${want} until you switch back. Loading takes a minute or two.`, 15000,
+  toast("warn", `Switch to ${modelLabel(want)}?`, `${modelLabel(cur)} is unloaded first: one model fits at a time. Every app that uses this ` +
+        `server gets ${modelLabel(want)} until you switch back. Loading takes a minute or two.`, 15000,
         {label: "Switch", run: () => switchModel(want)});
 };
 

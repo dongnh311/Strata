@@ -380,5 +380,30 @@ main { flex: 1; min-height: 0; display: flex; }
 @media (max-width: 720px) { .st-ctx__text { display: none; } }
 
 /* model picker (fork): one model at a time, switched through the router's /metrics + /v1/load */
-.model-pick { display: inline-flex; align-items: center; gap: 6px; margin-right: var(--st-s-2); }
-.model-select { max-width: 220px; }
+.model-pick { display: inline-flex; align-items: center; gap: 7px; min-width: 0; height: 36px;
+              padding: 0 10px 0 11px; margin-right: var(--st-s-2); color: var(--st-ink-muted);
+              border: 1px solid var(--st-line); border-radius: var(--st-r-pill);
+              background: linear-gradient(180deg, var(--st-surface), var(--st-surface-2));
+              box-shadow: 0 1px 2px color-mix(in srgb, var(--st-ink) 8%, transparent);
+              transition: border-color .15s ease, box-shadow .15s ease, color .15s ease; }
+.model-pick:hover { border-color: color-mix(in srgb, var(--st-accent) 45%, var(--st-line)); color: var(--st-ink); }
+.model-pick:focus-within { border-color: var(--st-accent); color: var(--st-ink);
+                           box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-accent) 20%, transparent); }
+.model-pick > svg { flex: none; color: var(--st-ink-muted); }
+.model-pick::after { content: ""; width: 6px; height: 6px; margin-left: -15px; margin-right: 1px;
+                     border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor;
+                     transform: rotate(45deg) translateY(-2px); pointer-events: none; opacity: .75; }
+.model-select { appearance: none; -webkit-appearance: none; min-width: 0; max-width: 205px; height: 34px;
+                padding: 0 16px 0 0; border: 0; outline: 0; background: transparent; color: var(--st-ink);
+                font: 600 var(--st-fs-sm) var(--st-font); text-overflow: ellipsis; cursor: pointer; }
+.model-select option { background: var(--st-surface); color: var(--st-ink); }
+.model-select:disabled { opacity: .55; cursor: progress; }
+@media (max-width: 720px) {
+  .model-pick { max-width: 42vw; height: 34px; padding-left: 9px; }
+  .model-select { max-width: calc(42vw - 34px); font-size: 16px; }
+}
+
+/* model picker: a small caption makes the control read as "Model: ..." rather than a bare select */
+.model-pick__label { font-size: 9.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+                     color: var(--st-ink-muted); opacity: .8; pointer-events: none; }
+@media (max-width: 720px) { .model-pick__label { display: none; } }
