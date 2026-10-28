@@ -1,4 +1,4 @@
-/* Strata web app - layout on top of tokens.css + components.css (the Strata UI kit). Colours, type, radii and
+﻿/* Strata web app - layout on top of tokens.css + components.css (the Strata UI kit). Colours, type, radii and
    shadows come only from the kit's tokens. */
 [hidden] { display: none !important; }
 html, body { height: 100%; }
@@ -197,7 +197,7 @@ main { flex: 1; min-height: 0; display: flex; }
   #unload-btn { min-width: 0; padding: 0 8px; }
   .st-header .st-tabs { min-width: 5.5rem; }
 }
-/* the name plus "Unloading…" still overflows at 374px in Firefox 158 */
+/* the name plus "Unloadingâ€¦" still overflows at 374px in Firefox 158 */
 @media (max-width: 382px) {
   .st-header__brand { display: none; }
   .st-header .st-tabs { min-width: 4.75rem; }
@@ -341,3 +341,17 @@ main { flex: 1; min-height: 0; display: flex; }
 /* a message may use the room a wide window gives the chat column (#3176 widened the column; the kit's 720px kept the messages narrow in it) */
 .st-msg { max-width: min(100%, 900px); }
 .st-toast .st-btn { white-space: nowrap; }
+
+/* slash commands (local fork): "/" opens the palette above the composer */
+.st-slash { position: absolute; bottom: calc(100% - var(--st-s-6) + 8px); left: 50%; transform: translateX(-50%);
+            width: min(560px, calc(100vw - 32px)); background: var(--st-surface); border: 1px solid var(--st-line);
+            border-radius: var(--st-r-sm); box-shadow: var(--st-sh-pop); padding: 6px; z-index: 30; }
+.st-slash__item { display: flex; align-items: baseline; gap: var(--st-s-3); padding: 8px 10px;
+                  border-radius: var(--st-r-sm); cursor: pointer; }
+.st-slash__item[aria-selected="true"] { background: var(--st-surface-2); }
+.st-slash__cmd { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); font-weight: 600; color: var(--st-ink); }
+.st-slash__desc { font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
+.st-slash__hint { padding: 5px 10px 3px; margin-top: 4px; border-top: 1px solid var(--st-line-soft);
+                  font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+
+

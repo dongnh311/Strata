@@ -1307,10 +1307,53 @@ async function generateReply() {
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("input").addEventListener("keydown", (e) => {
+  if (slashHits.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : slashHits.length - 1)) % slashHits.length;
+      slashRender();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); slashRun(slashHits[slashSel]); return; }
+    if (e.key === "Tab") { e.preventDefault(); $("input").value = "/" + slashHits[slashSel].cmd; slashUpdate(); return; }
+    if (e.key === "Escape") { slashClose(); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", autosize);
+$("input").addEventListener("input", () => { autosize(); slashUpdate(); });
+
+// "/" opens a small command palette above the composer; only words that name a command run.
+const SLASH_COMMANDS = [{cmd: "clear", desc: "Clear the chat (the same as the New chat button)"}];
+const slash = $("slash");
+let slashHits = [], slashSel = 0;
+function slashUpdate() {
+  const m = $("input").value.match(/^\/(\S*)/);
+  slashHits = m ? SLASH_COMMANDS.filter((c) => c.cmd.startsWith(m[1].toLowerCase())) : [];
+  slashSel = 0;
+  slashRender();
+}
+function slashRender() {
+  if (!slashHits.length) { slashClose(); return; }
+  slash.innerHTML = slashHits.map((c, i) =>
+    `<div class="st-slash__item" role="option" data-i="${i}" aria-selected="${i === slashSel}">` +
+    `<span class="st-slash__cmd">/${c.cmd}</span><span class="st-slash__desc">${esc(c.desc)}</span></div>`).join("") +
+    `<div class="st-slash__hint">&uarr;&darr; select &middot; Enter runs &middot; Tab completes &middot; Esc closes</div>`;
+  slash.hidden = false;
+}
+function slashClose() { slashHits = []; slash.hidden = true; }
+function slashRun(c) {
+  $("input").value = "";
+  autosize();
+  slashClose();
+  if (c.cmd === "clear") $("new-btn").click();
+}
+slash.addEventListener("pointerdown", (e) => {
+  const item = e.target.closest(".st-slash__item");
+  if (!item) return;
+  e.preventDefault();
+  slashRun(slashHits[+item.dataset.i]);
+});
 
 // one chat, as before: New chat clears it, with an Undo (with the saved-chats list on, its own New chat button does this job)
 $("new-btn").onclick = () => {
