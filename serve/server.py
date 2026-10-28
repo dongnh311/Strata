@@ -3745,19 +3745,23 @@ def _text_pieces(content):
                 yield part["text"]
 
 
-def request_has_cjk(req) -> bool:
+def request_has_cjk(req, ignore_system: bool = False) -> bool:
     """Did the user or the system prompt of this request write CJK text?  What the model wrote earlier and what tools
-    returned does not count: one leaked word in a past answer must not switch the filter off."""
+    returned does not count: one leaked word in a past answer must not switch the filter off.  `ignore_system` (the
+    config's "strip_cjk_ignore_system") skips the system prompt: a skill catalog or other system text is not a request
+    for Chinese, while a user who writes it still is."""
     if not isinstance(req, dict):
         return False
-    if any(_CJK.search(t) for t in _text_pieces(req.get("system"))):
+    if not ignore_system and any(_CJK.search(t) for t in _text_pieces(req.get("system"))):
         return True
     messages = req.get("messages")
     if isinstance(messages, list):
         for m in messages:
-            if isinstance(m, dict) and m.get("role") in ("user", "system", "developer"):
-                if any(_CJK.search(t) for t in _text_pieces(m.get("content"))):
-                    return True
+            if isinstance(m, dict):
+                role = m.get("role")
+                if role == "user" or (not ignore_system and role in ("system", "developer")):
+                    if any(_CJK.search(t) for t in _text_pieces(m.get("content"))):
+                        return True
     return False
 
 
@@ -4008,6 +4012,7 @@ class Service:
         self.min_free_vram_mib = 0
         self.before_load = None
         self.strip_cjk = False                           # the config's "strip_cjk": see CjkStripper
+        self.strip_cjk_ignore_system = False             # its "strip_cjk_ignore_system": system-prompt CJK (a skill list) does not switch it off
         self.cjk_stats = {"requests_touched": 0, "chars_removed": 0}
         self.before_load_timeout_s = 120.0               # #1997: how long the before_load command may run
         self.before_load_ignore_failure = False          # #1997: load even when it fails, without a VRAM check
@@ -5414,7 +5419,7 @@ class Service:
         the request's own fields (the whole request body).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         events = self._run(ids, thinking, tools, max_new, sampling, cancel, aliases, force, declared_only)
-        if not self.strip_cjk or request_has_cjk(sampling):
+        if not self.strip_cjk or request_has_cjk(sampling, self.strip_cjk_ignore_system):
             return events
         return self._without_cjk(events)
 
@@ -9071,6 +9076,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
     svc.strip_cjk = bool(cfg.get("strip_cjk"))
+    svc.strip_cjk_ignore_system = bool(cfg.get("strip_cjk_ignore_system"))
     try:
         svc.before_load_timeout_s = float(cfg.get("before_load_timeout_s") or svc.before_load_timeout_s)
     except (TypeError, ValueError):

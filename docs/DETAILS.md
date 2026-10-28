@@ -805,7 +805,8 @@ in another language, and the engine has no logit bias or token ban to stop that 
 the run config the server removes CJK characters (and CJK or fullwidth punctuation) from the **answer** text on its way out,
 never from the thinking or from a tool call's arguments, unless the user or the system prompt of that request contains such
 text. A removed word leaves a gap in the sentence (the spacing is tidied); the server window prints what was cut and the
-characters before it, and `/v1/status` counts the cuts under `strip_cjk`. Off by default.
+characters before it, and `/v1/status` counts the cuts under `strip_cjk`. Off by default. With `"strip_cjk_ignore_system": true`
+a system prompt that contains CJK (a skill catalog, for example) does not switch the filter off; a user who writes CJK still does.
 
 **Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
 

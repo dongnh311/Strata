@@ -69,9 +69,9 @@ class Stripper(unittest.TestCase):
 
 
 class WhoMayWriteChinese(unittest.TestCase):
-    def has(self, req):
+    def has(self, req, ignore_system=False):
         from serve.server import request_has_cjk
-        return request_has_cjk(req)
+        return request_has_cjk(req, ignore_system)
 
     def test_a_user_who_writes_chinese_gets_it(self):
         self.assertTrue(self.has({"messages": [{"role": "user", "content": "翻译这句话: hello"}]}))
@@ -81,6 +81,21 @@ class WhoMayWriteChinese(unittest.TestCase):
         self.assertTrue(self.has({"messages": [{"role": "system", "content": "请用中文回答"}, {"role": "user", "content": "hi"}]}))
         self.assertTrue(self.has({"system": [{"type": "text", "text": "用中文"}], "messages": [{"role": "user", "content": "hi"}]}))
         self.assertTrue(self.has({"system": "用中文", "messages": [{"role": "user", "content": "hi"}]}))
+
+    def test_a_system_prompt_can_be_ignored_but_a_user_cannot(self):
+        """A skill catalog in the system prompt must not switch the filter off (config "strip_cjk_ignore_system")."""
+        req = {"system": "阿里云百炼 / Aliyun Bailian", "messages": [{"role": "user", "content": "Tìm giá vàng"}]}
+        self.assertTrue(self.has(req))
+        self.assertFalse(self.has(req, ignore_system=True))
+        self.assertTrue(self.has({"system": "阿里云百炼", "messages": [{"role": "user", "content": "用中文"}]},
+                                ignore_system=True))
+        self.assertTrue(self.has({"messages": [{"role": "user", "content": "用中文"},
+                                               {"role": "system", "content": "阿里云百炼"}]}, ignore_system=True))
+        self.assertFalse(self.has({"messages": [{"role": "system", "content": "阿里云百炼"},
+                                                {"role": "user", "content": "Tìm giá vàng"}]}, ignore_system=True))
+        self.assertFalse(self.has({"system": "阿里云百炼", "messages": [
+            {"role": "user", "content": "Tìm giá vàng"},
+            {"role": "assistant", "content": "Giá vàng 更强"}]}, ignore_system=True))
 
     def test_what_the_model_or_a_tool_wrote_does_not_count(self):
         """A leaked word in an earlier answer, or Chinese text a tool returned, must not switch the filter off."""
@@ -170,6 +185,19 @@ class InTheServer(unittest.TestCase):
         self.start(self.ANSWER)
         self.assertEqual(self.chat(prompt="用中文: giá vàng")[0], "Giá vàng 更强 hôm nay là 144 triệu.")
         self.assertEqual(self.status()["strip_cjk"]["chars_removed"], 0)
+
+    def test_a_chinese_skill_catalog_in_the_system_does_not_switch_the_filter_off(self):
+        self.start(self.ANSWER)
+        self.svc.strip_cjk_ignore_system = True
+        self.assertEqual(self.chat(system="阿里云百炼 / Aliyun Bailian")[0], "Giá vàng hôm nay là 144 triệu.")
+        self.assertEqual(self.status()["strip_cjk"]["chars_removed"], 2)
+        body = {"model": "m", "max_tokens": 200, "messages": [
+            {"role": "system", "content": "阿里云百炼 / Aliyun Bailian"}, {"role": "user", "content": "Tìm giá vàng"}]}
+        msg = json.loads(self.post("/v1/chat/completions", body))["choices"][0]["message"]
+        self.assertEqual(msg["content"], "Giá vàng hôm nay là 144 triệu.")
+        self.assertEqual(self.status()["strip_cjk"]["chars_removed"], 4)
+        self.assertEqual(self.chat(prompt="用中文: giá vàng", system="阿里云百炼")[0], "Giá vàng 更强 hôm nay là 144 triệu.")
+        self.assertEqual(self.status()["strip_cjk"]["chars_removed"], 4)
 
     def test_only_the_answer_is_filtered_not_the_thinking(self):
         self.start("想一想 the price</think>\n\nGiá vàng 更强 đây.")
