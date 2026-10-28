@@ -340,6 +340,58 @@ $("unload-btn").onclick = async () => {
   }
 };
 
+// ------------------------------------------------------------------ model picker (fork)
+// One model at a time: /metrics lists what the router serves; POST v1/load asks it to switch.
+let modelNow = null, modelsSig = "", switchErrAt = null;
+function renderModels(ms) {
+  const list = (ms && ms.available) || [], sel = $("model-select"), sw = ms && ms.switching;
+  $("model-pick").hidden = list.length < 2;
+  if (!ms) return;
+  if (!sw) {
+    if (modelNow && ms.current !== modelNow) {
+      toast("success", tr("model.switched", "Model switched"), `${ms.current} answers now.`, 5000);
+      loadHealth();
+    }
+    modelNow = ms.current;
+  }
+  const shown = sw ? (sw.phase === "restoring" ? sw.from : sw.to) : ms.current;
+  const sig = `${list.join("\n")}|${shown}`;
+  if (sig !== modelsSig && document.activeElement !== sel) {
+    modelsSig = sig;
+    sel.innerHTML = list.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    sel.value = shown;
+  }
+  sel.disabled = !!sw;
+  $("model-pick").title = `Model: ${shown} (one at a time)`;
+  const err = ms.last_error;
+  if (err && err.at !== switchErrAt) {
+    const msg = err.message.length > 280 ? `${err.message.slice(0, 280)}…` : err.message;
+    if (switchErrAt !== null || Date.now() / 1000 - err.at < 30) toast("error", "Model not switched", msg, 12000);
+    switchErrAt = err.at;
+  } else if (!err) {
+    switchErrAt = 0;
+  }
+}
+async function switchModel(name) {
+  try {
+    const r = await fetch("v1/load", {method: "POST", headers: headers(true), body: JSON.stringify({model: name})});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { setPill("queued", `Switching to ${name}…`); $("model-select").disabled = true; return; }
+    toast("error", "Model not switched", (j.error && j.error.message) || `HTTP ${r.status}`, 8000);
+  } catch (e) {
+    toast("error", "Model not switched", String(e), 8000);
+  }
+}
+$("model-select").onchange = () => {
+  const sel = $("model-select"), want = sel.value, cur = modelNow;
+  sel.value = cur;
+  sel.blur();
+  if (!want || want === cur) return;
+  toast("warn", `Switch to ${want}?`, `${cur} is unloaded first: one model fits at a time. Every app that uses this ` +
+        `server gets ${want} until you switch back. Loading takes a minute or two.`, 15000,
+        {label: "Switch", run: () => switchModel(want)});
+};
+
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
@@ -365,6 +417,7 @@ function render(m) {
     setPill("idle", tr("pill.idle", "Idle"));
   }
   modelButton(live);
+  renderModels(m.models);
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);

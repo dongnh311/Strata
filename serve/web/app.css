@@ -378,3 +378,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-ctx__text { font-size: var(--st-fs-xs); color: var(--st-ink-soft); font-variant-numeric: tabular-nums;
                 white-space: nowrap; }
 @media (max-width: 720px) { .st-ctx__text { display: none; } }
+
+/* model picker (fork): one model at a time, switched through the router's /metrics + /v1/load */
+.model-pick { display: inline-flex; align-items: center; gap: 6px; margin-right: var(--st-s-2); }
+.model-select { max-width: 220px; }

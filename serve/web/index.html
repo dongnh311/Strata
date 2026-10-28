@@ -31,6 +31,9 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg><span data-i18n="tab.about">About</span></button>
   </nav>
   <span class="st-header__spacer"></span>
+  <label class="model-pick" id="model-pick" title="The model this server runs (one at a time)" hidden>
+    <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-layers"/></svg>
+    <select class="model-select" id="model-select" aria-label="Model"></select></label>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text" data-i18n="pill.connecting">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" disabled>&hellip;</button>
