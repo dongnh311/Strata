@@ -2,9 +2,9 @@
 //
 // The IQ2_XS / IQ3_XXS model files keep their experts in i-quant formats (IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS,
 // IQ3_S gate/up; Q2_0 or IQ4_NL down) whose values cannot be re-expressed in the Q2_0 pack form.  A native expert
-// blob is the three GGUF slices back to back, [gate rows | up rows | down rows], and the arithmetic is ggml-cpu's
-// own (`ggml_get_type_traits_cpu`): the activation is quantized with the weight type's `vec_dot_type` and each row
-// is one `vec_dot`, exactly what llama.cpp's CPU backend computes for the same tensor.
+// blob is the three GGUF slices back to back, [gate rows | up rows | down rows]. Activations use the weight type's
+// ggml `vec_dot_type`; dispatch selects a format-specific kernel or ggml's per-token dot. The arithmetic mode
+// controls whether grouping tokens may change the selected row arithmetic.
 #pragma once
 
 #include <cstddef>
@@ -23,6 +23,9 @@ inline constexpr size_t kNativeHBytes = 2048;
 /// Values of the largest expert intermediate the pool's native scratch holds per token (pool.hpp's
 /// SplitBufMulti::ff: n_ff floats per token); native_fmt rejects wider layers.
 inline constexpr int64_t kNativeFF = 2048;
+
+/// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
+enum class NativeArithmetic { Default, WindowInvariant };
 
 /// One layer's native expert geometry.
 struct NativeFmt {
@@ -76,5 +79,12 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
+
+/// Same per-token result as the corresponding legacy nt=1 call on this build and CPU.
+/// Kernels that already satisfy this contract retain their grouped execution.
+void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                              float* const* ff, int r0, int r1);
+void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                                float* const* out, int r0, int r1);
 
 }  // namespace strata::kernels::cpu

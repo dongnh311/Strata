@@ -50,7 +50,7 @@ async function copyText(text, btn) {
     use.setAttribute("href", `${SPRITE}#i-check`);
     setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
   }
-  toast("success", "Copied to clipboard", "", 1800);
+  toast("success", tr("toast.copied", "Copied to clipboard"), "", 1800);
 }
 
 // ------------------------------------------------------------------ theme and tabs
@@ -60,6 +60,7 @@ function setTheme(t, save) {
   if (save) try { localStorage.setItem("strata.theme", t); } catch (e) { /* ignore */ }
   $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
+  refreshPreviews();                                  // the preview frames carry the page's colours
 }
 const flipTheme = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
 $("theme-btn").onclick = flipTheme;
@@ -104,49 +105,24 @@ function saveApiKey(notify = false) {
   }
 }
 $("api-key").oninput = () => saveApiKey();
-// a key entered after the page loaded: the boot-time GET /mcp was refused, so fetch the tools again (else the chat
-// never offers them - strata_mcp is only sent when tools were listed)
-$("api-key").onchange = () => { saveApiKey(true); loadMcp(); };
+$("api-key").onchange = () => saveApiKey(true);
 
 let health = {model: "strata", images: false, max_context: 0};
+// the texts that depend on what this server offers: the empty chat's line and the attach button's hint
+function renderEmptyChat() {
+  $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
+                                        : tr("composer.attach", "Attach a text file (or drop it here)");
+  $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
+}
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    renderEmptyChat();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
-}
-
-// ------------------------------------------------------------------ context meter
-// /slots keeps the last request's prompt size next to n_ctx ("a front-end's context meter", #562): the meter shows
-// how much of the context window that turn (or any request on this engine, whichever app made it) really planned
-// to read. After /clear or /compact it shows a dash until the next turn, when the server sees the new history.
-let ctxMeter = null;                                   // {used, n_ctx} as the server last reported
-async function refreshCtx() {
-  try {
-    const s = ((await (await fetch("slots", {headers: headers()})).json())[0]) || {};
-    const used = Math.max(0, +s.n_prompt_tokens || 0), n = +s.n_ctx || 0;
-    ctxMeter = n > 0 ? {used, n_ctx: n} : null;
-  } catch (e) { ctxMeter = null; }
-  renderCtx();
-}
-function renderCtx() {
-  const el = $("ctx-meter");
-  if (!ctxMeter) { el.hidden = true; return; }
-  const {used, n_ctx} = ctxMeter;
-  const pct = Math.min(100, Math.round((used / n_ctx) * 100));
-  const free = Math.max(0, n_ctx - used);
-  const tone = pct >= 85 ? "st-ctx--danger" : pct >= 60 ? "st-ctx--warn" : "";
-  el.className = `st-ctx ${tone}`;
-  el.title = `${fmt(used)} prompt tokens on the last request · ${fmt(free)} free · ${fmt(n_ctx)} total`;
-  el.hidden = false;
-  el.innerHTML = `<span class="st-ctx__bar"><span style="width:${pct}%"></span></span>` +
-                 `<span class="st-ctx__text">${ctxfmt(free)} of ${ctxfmt(n_ctx)} free</span>`;
 }
 
 // ------------------------------------------------------------------ Monitor
@@ -192,105 +168,204 @@ function setMetric(key, value, unit, sub) {
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let metricsEpoch = 0;
+// After Load or Unload returns, a poll that started earlier can still say the opposite. Hold the POST's state until a later
+// poll agrees, or until the first poll that started after the POST arrives. (PR #3550 by sakuumomo)
+let metricsHold = null;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
+function metricsAgree(live, state) {
+  const s = (live && live.state) || "";
+  if (state === "unloaded") return s === "unloaded";
+  return s !== "" && s !== "unloaded";
+}
 async function poll() {
+  const epoch = ++metricsEpoch;
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
-      setPill("error", "API key needed");
-      // long and with a button: a 6 s toast was easy to miss, and without the key the whole page looks dead
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 60000,
-                                                {label: "Add key", run: () => { showTab("about"); $("api-key").focus(); }}); }
+      setPill("error", tr("pill.keyNeeded", "API key needed"));
+      if (!keyWarned) { keyWarned = true; toast("warn", tr("pill.keyNeeded", "API key needed"), tr("toast.keyAbout", "This server needs a key: add it under About > Settings."), 6000); }
     } else if (r.ok) {
-      lastMetrics = await r.json();
+      const m = await r.json();
+      if (metricsHold && epoch <= metricsHold.after && !metricsAgree(m.live, metricsHold.state)) {
+        setTimeout(poll, 1000);
+        return;
+      }
+      if (metricsHold && (metricsAgree(m.live, metricsHold.state) || epoch > metricsHold.after)) metricsHold = null;
+      lastMetrics = m;
       metricsFailures = 0;
       render(lastMetrics);
     } else {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
-    if (++metricsFailures === 3) setPill("error", "Server not reachable");
+    if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
 }
 
-// ------------------------------------------------------------------ the model switch (the config's "models")
-// one model at a time: POST v1/load {"model"} unloads this one and starts the other; /metrics says how it goes
-let modelNow = null, modelsSig = "", switchErrAt = null;
-function renderModels(ms) {
-  const list = (ms && ms.available) || [], sel = $("model-select"), sw = ms && ms.switching;
-  $("model-pick").hidden = list.length < 2;
-  if (!ms) return;
-  if (!sw) {                                        // the server names the new model while it still loads
-    if (modelNow && ms.current !== modelNow) {
-      toast("success", "Model switched", `${ms.current} answers now.`, 5000);
-      loadHealth();
-    }
-    modelNow = ms.current;
-  }
-  const shown = sw ? (sw.phase === "restoring" ? sw.from : sw.to) : ms.current;
-  const sig = `${list.join("\n")}|${shown}`;
-  if (sig !== modelsSig && document.activeElement !== sel) {
-    modelsSig = sig;
-    sel.innerHTML = list.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-    sel.value = shown;
-  }
-  sel.disabled = !!sw;
-  $("model-pick").title = `Model: ${shown} (the server runs one at a time)`;
-  const err = ms.last_error;
-  if (err && err.at !== switchErrAt) {
-    // a failure from before this page was opened is not news; the server window has the whole message
-    const msg = err.message.length > 280 ? `${err.message.slice(0, 280)}…` : err.message;
-    if (switchErrAt !== null || Date.now() / 1000 - err.at < 30) toast("error", "Model not switched", msg, 12000);
-    switchErrAt = err.at;
-  } else if (!err) {
-    switchErrAt = 0;
-  }
-}
-function switchingText(sw) {
-  return sw.phase === "restoring" ? `Loading ${sw.from} again…` : `Switching to ${sw.to}…`;
-}
-async function switchModel(name) {
-  try {
-    const r = await fetch("v1/load", {method: "POST", headers: headers(true), body: JSON.stringify({model: name})});
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) { setPill("queued", `Switching to ${name}…`); $("model-select").disabled = true; return; }
-    toast("error", "Model not switched", (j.error && j.error.message) || `HTTP ${r.status}`, 8000);
-  } catch (e) {
-    toast("error", "Model not switched", String(e), 8000);
-  }
-}
-$("model-select").onchange = () => {
-  const sel = $("model-select"), want = sel.value, cur = modelNow;
-  sel.value = cur;                                  // nothing changes until the switch is confirmed
-  sel.blur();
-  if (!want || want === cur) return;
-  toast("warn", `Switch to ${want}?`, `${cur} is unloaded first: one model fits at a time. Every app that uses this ` +
-        `server gets ${want} until you switch back. Loading takes a minute or two.`, 15000,
-        {label: "Switch", run: () => switchModel(want)});
-};
-
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
   $("pill-text").textContent = text;
+  // a poll re-sets the sentence every second; refit only when its text changed
+  if (text !== lastPillText) { lastPillText = text; fitHeader(); }
 }
+let lastPillText = null;
+// The pill's sentence is the first thing the header row can spare when it runs out of room.
+function fitHeader() {
+  const header = document.querySelector(".st-header");
+  if (!header) return;
+  header.classList.remove("st-header--clip");
+  if (header.scrollWidth > header.clientWidth) header.classList.add("st-header--clip");
+}
+window.addEventListener("resize", fitHeader);
+
+// ------------------------------------------------------------------ Load / Unload (POST /load, /unload: the header button)
+// Metrics stay "unloaded" until the engine is READY, so a turn or an image job on this page has to paint Loading itself.
+// modelOp covers the button's own POST, which returns before the next poll can agree.
+let modelOp = null;
+let imageBusy = false;
+function pageBusy() { return busy != null || imageBusy; }
+// "generating an image" is the job a refresh can see. imageBusy is this page's POST before that phase is published. A chat
+// phase already on the metrics wins, because Stop still stops that reply.
+function imageLive(live) {
+  if (live && live.phase === "generating an image") return true;
+  const state = live && live.state;
+  if (state === "reading" || state === "generating") return false;
+  return imageBusy;
+}
+function paintLive() { if (lastMetrics) render(lastMetrics); }
+function turnBlocksUnload(live) {
+  const state = (live && live.state) || "";
+  return pageBusy() || state === "reading" || state === "generating" || (live && live.queued > 0);
+}
+function setModelButton(text, title, disabled) {
+  const btn = $("unload-btn");
+  btn.textContent = text; btn.title = title; btn.disabled = disabled;
+  fitHeader();
+}
+function modelButton(live) {
+  if (modelOp === "load") return setModelButton(tr("model.loading", "Loading…"), tr("model.loadingTitle", "The model is loading"), true);
+  if (modelOp === "unload") return setModelButton(tr("model.unloading", "Unloading…"), tr("model.unloadingTitle", "The model is unloading"), true);
+  const state = (live && live.state) || "";
+  const metricsBusy = state === "reading" || state === "generating" || (live && live.queued > 0);
+  const imageNow = imageLive(live);
+  const unload = tr("model.unload", "Unload");
+  if (state === "unloaded") {
+    if (imageNow) return setModelButton(tr("model.loading", "Loading…"), tr("model.imageLoading", "An image is already loading the model"), true);
+    if (pageBusy()) return setModelButton(tr("model.loading", "Loading…"), tr("model.replyLoading", "A reply is already loading the model"), true);
+    return setModelButton(tr("model.load", "Load"), tr("model.loadTitle", "Load the model now. A message also loads it."), false);
+  }
+  if (imageNow) return setModelButton(unload, tr("model.imageBusy", "An image is generating. It finishes on its own."), true);
+  if (!state) return setModelButton("…", tr("model.waiting", "Waiting for the server"), true);
+  if (metricsBusy || pageBusy()) return setModelButton(unload, tr("model.stopFirst", "Stop the reply, then unload"), true);
+  return setModelButton(unload, tr("model.unloadTitle", "Unload the model and free the GPU"), false);
+}
+$("unload-btn").onclick = async () => {
+  if (modelOp) return;
+  const live = (lastMetrics && lastMetrics.live) || {};
+  const loading = live.state === "unloaded";
+  const busyCopy = (sample, stillLoading) => stillLoading
+    ? (imageLive(sample) ? tr("model.imageLoadingDot", "An image is already loading the model.") : tr("model.replyLoadingDot", "A reply is already loading the model."))
+    : (imageLive(sample) ? tr("model.imageBusy", "An image is generating. It finishes on its own.") : tr("model.stopFirstDot", "Stop the reply, then unload."));
+  if (loading ? pageBusy() : turnBlocksUnload(live)) {
+    toast("warn", tr("model.busy", "Model is busy"), busyCopy(live, loading));
+    return;
+  }
+  if (!loading && !confirm(tr("model.confirmUnload", "Unload the model and free the GPU? Load, or the next message, brings it back."))) return;
+  // confirm() blocks the poll. Yield so a sample that arrived during the dialog is applied. A confirmed Unload stays an unload.
+  if (!loading) {
+    modelOp = "unload";
+    modelButton(live);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const now = (lastMetrics && lastMetrics.live) || {};
+  const loadingNow = loading;
+  if (loadingNow ? pageBusy() : turnBlocksUnload(now)) {
+    modelOp = null;
+    if (lastMetrics) render(lastMetrics); else modelButton(now);
+    toast("warn", tr("model.busy", "Model is busy"), busyCopy(now, loadingNow));
+    return;
+  }
+  modelOp = loadingNow ? "load" : "unload";
+  modelButton(now);
+  if (loadingNow) toast("info", tr("model.loadingToast", "Loading the model"), tr("model.fewMinutes", "This can take a few minutes."));
+  const remember = (state) => {
+    if (!lastMetrics) lastMetrics = {};
+    lastMetrics.live = Object.assign({}, lastMetrics.live, {state, queued: 0});
+    metricsHold = {state, after: metricsEpoch};
+  };
+  try {
+    const r = await fetch(loadingNow ? "load" : "unload", {method: "POST", headers: headers(true), body: "{}"});
+    let body = {};
+    try { body = await r.json(); } catch (e) { /* the connection dropped */ }
+    const status = body.status || "";
+    const msg = (body.error && body.error.message) ||
+                (r.status === 401 ? tr("toast.keyAbout2", "API key needed: add it under About > Settings.") : tr("toast.httpAnswer", "The server answered HTTP {code}.", {code: r.status}));
+    const failTitle = loadingNow ? tr("model.loadFailed", "Load failed") : tr("model.unloadFailed", "Unload failed");
+    if (loadingNow) {
+      if (r.ok && status === "loaded") {
+        remember("idle");
+        toast("success", tr("model.loaded", "Model loaded"), tr("model.gpuInUse", "The GPU is in use."));
+      } else {
+        toast("error", failTitle, msg);
+      }
+    } else if (status === "unloaded" || status === "not loaded") {
+      remember("unloaded");
+      toast(status === "unloaded" ? "success" : "info",
+            status === "unloaded" ? tr("model.unloaded", "Model unloaded") : tr("model.alreadyUnloaded", "Already unloaded"),
+            tr("model.gpuFree", "The GPU is free. Load, or the next message, brings it back."));
+    } else if (r.status === 409 || status === "busy") {
+      let sample = (lastMetrics && lastMetrics.live) || {};
+      try {
+        const mr = await fetch("metrics", {headers: headers()});
+        if (mr.ok) {
+          const m = await mr.json();
+          if (m && m.live) { sample = m.live; lastMetrics = m; }
+        }
+      } catch (e) { /* the 409 body has no phase */ }
+      toast("warn", tr("model.busy", "Model is busy"), imageLive(sample)
+        ? tr("model.imageBusy", "An image is generating. It finishes on its own.") : tr("model.stopFirstDot", "Stop the reply, then unload."));
+    } else if (status === "unsupported") {
+      toast("error", tr("model.unsupported", "Unload is not available"), "");
+    } else {
+      toast("error", failTitle, msg);
+    }
+  } catch (e) {
+    toast("error", loadingNow ? tr("model.loadFailed", "Load failed") : tr("model.unloadFailed", "Unload failed"), tr("model.noAnswer", "The server did not answer."));
+  } finally {
+    modelOp = null;
+    if (lastMetrics) render(lastMetrics); else modelButton({});
+  }
+};
 
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
-  // the header pill
-  if (live.state === "reading") {
+  // the header pill. modelOp and a local load win over "N queued": with parallel requests, queued stays up through
+  // ensure_loaded(), and metrics stay "unloaded" until the engine is READY. An image POST in that window is still a load.
+  const localLoad = live.state === "unloaded" && (busy != null || imageBusy);
+  if (modelOp === "load") {
+    setPill("idle", tr("model.loading", "Loading…"));
+  } else if (modelOp === "unload") {
+    setPill("idle", tr("model.unloading", "Unloading…"));
+  } else if (localLoad) {
+    setPill("idle", tr("model.loading", "Loading…"));
+  } else if (imageLive(live)) {
+    setPill("reading", tr("pill.image", "Generating image…"));
+  } else if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
+    setPill("reading", pct != null ? tr("pill.readingPct", "Reading prompt · {pct}%", {pct}) : tr("pill.reading", "Reading prompt"));
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    setPill("generating", tr("pill.generating", "Generating · {rate} tok/s", {rate: fmt(live.tok_s, 1)}));
+  } else if (live.state === "unloaded") {
+    setPill("idle", tr("pill.unloaded", "Unloaded"));
   } else {
-    setPill("idle", "Idle");
+    setPill("idle", tr("pill.idle", "Idle"));
   }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  renderModels(m.models);
-  if (m.models && m.models.switching) setPill("queued", switchingText(m.models.switching));
+  modelButton(live);
+  if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
@@ -340,11 +415,29 @@ function renderTotals(t) {
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
-  const on = live.queued > 0 ? "queued" : live.state;
-  for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
+  // A local turn keeps metrics on "unloaded" for the whole engine start.
+  const imageNow = imageLive(live);
+  const starting = modelOp === "load" || imageNow || (busy != null && live.state === "unloaded");
+  const on = !modelOp && live.queued > 0 ? "queued" : live.state;
+  for (const b of document.querySelectorAll("#state-badges .st-badge")) {
+    const lit = (b.dataset.s === on || b.dataset.s === live.state) && !(starting && b.dataset.s === "unloaded");
+    b.classList.toggle("on", lit);
+  }
   const prog = $("state-progress");
   let label = "Waiting for a request", detail = "", pct = 0;
-  if (live.state === "reading") {
+  if (modelOp === "load" || (busy != null && live.state === "unloaded" && !imageNow)) {
+    label = "Loading";
+    delete prog.dataset.tone;
+    detail = "The model is loading.";
+  } else if (imageNow && (live.state === "unloaded" || live.state === "reading" || live.state === "generating" || live.state === "idle")) {
+    label = live.state === "unloaded" ? "Loading" : "Generating image";
+    delete prog.dataset.tone;
+    detail = live.state === "unloaded" ? "The model is loading." : "An image is generating. It finishes on its own.";
+  } else if (modelOp === "unload") {
+    label = "Unloading";
+    delete prog.dataset.tone;
+    detail = "Freeing the GPU.";
+  } else if (live.state === "reading") {
     label = "Reading prompt";
     prog.dataset.tone = "info";
     if (live.prompt_total) {
@@ -358,6 +451,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+  } else if (live.state === "unloaded") {
+    label = "Unloaded";
+    delete prog.dataset.tone;
+    detail = "Load brings it back. A message does too.";
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -433,11 +530,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
-                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
+                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
+                   timeout: ["st-badge--queued", "Timeout"]};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="bỏ kiểm duyệt ${r.projection ? "bật" : "tắt"}">${r.projection ? "UNC" : "gốc"}</span>`;
+      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
@@ -467,8 +565,8 @@ function projectionText(c) {
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
   return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Bật/tắt theo từng chat trong Sampling. ` +
-         "Vector bỏ kiểm duyệt (refusal-direction projection): bật thì model từ chối ít hơn hẳn — bạn chịu trách nhiệm về nội dung sinh ra";
+         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
+         "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
@@ -480,7 +578,7 @@ function renderAbout(eng, hw, st) {
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
-    ["Bỏ kiểm duyệt (Uncensored)", projectionText(eng.cvec)],
+    ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
     ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
@@ -601,10 +699,36 @@ function inline(s) {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
-function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
+// An ```svg or ```html block that is complete gets a Preview button (serve/web/preview.js): the block's own code in a sandboxed
+// frame, built when it is first opened and again when the theme changes. The state lives on the box (data-preview), so it
+// resets if the answer is rebuilt. A page (html) can also be run WITH scripts, after a warning, one block at a time.
+function pageTheme() {
+  const root = document.documentElement;
+  return {dark: root.dataset.theme === "dark", ink: getComputedStyle(root).getPropertyValue("--st-ink").trim()};
+}
+function fillPreview(fr, scripts, blank) {
+  const box = fr.closest(".st-code");
+  const doc = blank ? null : StrataPreview.previewDoc(fr.dataset.lang, box.querySelector("pre").textContent, scripts, pageTheme(), window);
+  const nf = StrataPreview.makeFrame(doc, {scripts, title: fr.title, lang: fr.dataset.lang});
+  fr.replaceWith(nf);
+  box.classList.toggle("st-code--run", !!(doc && scripts));
+  const rb = box.querySelector("[data-preview-scripts]");
+  if (rb) {
+    rb.setAttribute("aria-pressed", String(!!(doc && scripts)));
+    rb.setAttribute("aria-label", doc && scripts ? tr("preview.stopScripts", "Stop scripts") : tr("preview.runScripts", "Run scripts"));
+  }
+}
+function refreshPreviews() { for (const fr of document.querySelectorAll("iframe[data-opened]")) fillPreview(fr, fr.dataset.scripts === "1"); }
+function codeBlock(lang, code, complete) {
+  const ok = complete && StrataPreview.canPreview(lang || "", code);
+  const kind = ok ? StrataPreview.kindOf(lang) : null;
+  const label = kind === "svg" ? tr("preview.showSvg", "Preview the picture") : tr("preview.showPage", "Preview the page");
+  const head = `<div class="st-code__head"><span>${esc(lang || tr("code.label", "code"))}</span><span class="st-code__btns">` +
+    (kind === "page" ? `<button class="st-btn st-btn--icon" data-preview-scripts aria-label="${esc(tr("preview.runScripts", "Run scripts"))}" aria-pressed="false" title="${esc(tr("preview.runScripts", "Run scripts"))}">${icon("warning")}</button>` : "") +
+    (ok ? `<button class="st-btn st-btn--icon" data-preview-toggle data-preview-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}" aria-pressed="false">${icon("image")}</button>` : "") +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(tr("code.copy", "Copy code"))}">${icon("copy")}</button></span></div>`;
+  const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${esc(kind === "svg" ? tr("preview.titleSvg", "Picture preview") : tr("preview.titlePage", "Page preview"))}" data-lang="${esc(lang)}"></iframe></div>` : "";
+  return `<div class="st-code">${head}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -650,8 +774,8 @@ function markdown(text) {
     html += blocks(rest.slice(0, m.index));
     rest = rest.slice(m.index + m[0].length);
     const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { html += codeBlock(m[2].trim(), rest); break; }         // still streaming
-    html += codeBlock(m[2].trim(), rest.slice(0, end.index));
+    if (!end) { html += codeBlock(m[2].trim(), rest, false); break; }  // still streaming: no preview of a half-written block
+    html += codeBlock(m[2].trim(), rest.slice(0, end.index), true);
     rest = rest.slice(end.index + end[0].length);
   }
   return html;
@@ -662,7 +786,8 @@ function markdown(text) {
 // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, espScale: 1, mcp: true};
+const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
+                  chatList: false, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
@@ -670,14 +795,10 @@ function samplingUntouched(s) {
 }
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
-let messages = store.get("chat", []);
+let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
 let attachments = [];                 // {name, url}
-let busy = null;                      // {controller, msg}
-
-function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
-}
+let busy = null;                      // {controller, msg, cut, cutAfterTool}
+let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
@@ -701,8 +822,8 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || tr("chat.image", "image"); wrap.appendChild(img); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || tr("chat.image", "image")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
@@ -712,46 +833,35 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.textContent = `${tr("chat.you", "You")} · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(tr("chat.copyAnswer", "Copy the answer"))}" title="${esc(tr("chat.copy", "Copy"))}">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
+  const actions = msgActions(m, i);                 // edit / regenerate / rewind (chats-ui.js), when switched on
+  if (actions) el.appendChild(actions);
   return el;
 }
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
-const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
+const TOOL_STATE = {writing: ["st-badge--reading", () => tr("tool.writing", "Writing")], running: ["st-badge--generating", () => tr("tool.running", "Running")],
+                    done: ["", () => tr("tool.done", "Done")], error: ["st-badge--error", () => tr("tool.error", "Error")],
+                    skipped: ["st-badge--queued", () => tr("tool.skipped", "Not run")]};
 function toolHtml(t, k) {
-  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
+  const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
+  const label = labelOf();
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
-  // attach_file: the file is pasted INTO the message - a card that is open by default, not a collapsed tool block
-  if (t.tool === "attach_file" && t.ok && t.result != null) {
-    const nl = t.result.indexOf("\n");
-    const head = nl >= 0 ? t.result.slice(0, nl) : "";
-    const kb = head.match(/\(([\d,]+) bytes\):\s*$/);
-    const ki = head.indexOf("k\u00E8m ");
-    const path = ki >= 0 ? head.slice(ki + 4).replace(/\s*\([\d,]+ bytes\):\s*$/, "") : "";
-    const name = path.split(/[\\/]/).pop() || "file";
-    return `<div class="st-attach" data-tool="${k}">` +
-      `<div class="st-attach__head">${icon("attach", "st-icon st-icon--sm")}` +
-      `<span class="st-attach__name" title="${esc(path)}">${esc(name)}` +
-      `${kb ? ` <span class="muted small">${esc(kb[1])} bytes</span>` : ""}</span>` +
-      `${t.ms != null ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}</div>` +
-      `<pre class="st-attach__pre">${esc(nl >= 0 ? t.result.slice(nl + 1) : "")}</pre></div>`;
-  }
   let body = "";
   if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+    body = `<div class="tool-call__label">${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
     if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+      body += `<div class="tool-call__label">${esc(t.ok ? tr("tool.result", "Result") : tr("tool.error", "Error"))}${t.chars ? ` · ${esc(tr("tool.chars", "{n} characters", {n: fmt(t.chars)}))}` : ""}` +
+              `${t.truncated ? esc(tr("tool.cut", ", cut for the model")) : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
@@ -761,39 +871,53 @@ function toolHtml(t, k) {
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
-// Generated pictures to embed in the answer: the picture sidecar's direct /img links (a generate_image tool answer always
-// carries one below its gallery link) are taken from the tool-result fields - the trusted origin of the URL - and never
-// from the model's own text, which can mention any address.
-function sidecarImageUrls(m) {
-  const urls = [];
-  for (const t of m.tools || []) {
-    for (const u of (t.result || "").match(/https?:\/\/[^\s"']+\/(?:img\/[0-9a-f]{12}\.png|graphs\/[A-Za-z0-9_-]+\.(?:png|svg))/g) || []) {
-      const clean = u.replace(/[.,;:!)]+$/, "");
-      if (!urls.includes(clean)) urls.push(clean);
-    }
-  }
-  return urls.slice(0, 6);                        // a picture and (or) a couple of diagrams per answer is plenty
+// Raster tool results are same-origin cached files; credentials stay in request headers.
+const mediaBlobs = new Map();
+let mediaEpoch = 0;
+function clearToolMedia() {
+  mediaEpoch++;
+  for (const pending of mediaBlobs.values()) pending.then((url) => URL.revokeObjectURL(url), () => {});
+  mediaBlobs.clear();
 }
-function imgStrip(urls) {
-  return urls.length
-    ? `<div class="msg-images">${urls.map((u) => {
-        const plot = u.includes("/graphs/");
-        return `<a href="${esc(u)}" target="_blank" rel="noopener" title="Open the full picture"><img src="${esc(u)}" alt="${plot ? "diagram" : "generated picture"}" class="${plot ? "st-plot" : ""}" loading="lazy"></a>`;
-      }).join("")}</div>`
-    : "";
+window.addEventListener("pagehide", clearToolMedia);
+window.addEventListener("pageshow", (event) => { if (event.persisted) hydrateToolImages(document); });
+function safeToolMedia(url) { return typeof url === "string" && /^tool-media\/[0-9a-f]{64}\.(png|jpg|webp)$/.test(url); }
+function toolImages(t) {
+  return (t.images || []).filter((im) => safeToolMedia(im.url)).map((im) =>
+    `<figure class="tool-image"><img data-tool-image="${esc(im.url)}" alt="Tool image" loading="lazy">` +
+    `<figcaption><a class="st-btn" data-tool-download="${esc(im.url)}" download="${esc(im.name || "generated-image.png")}">Download image</a></figcaption></figure>`).join("");
+}
+function hydrateToolImages(root) {
+  root.querySelectorAll("[data-tool-image]").forEach((img) => {
+    const url = img.dataset.toolImage, epoch = mediaEpoch;
+    if (!safeToolMedia(url)) return;
+    if (!mediaBlobs.has(url)) mediaBlobs.set(url, fetch(url, {headers: headers()}).then((r) => {
+      if (!r.ok) throw new Error("Image unavailable");
+      return r.blob();
+    }).then((b) => URL.createObjectURL(b)).catch((e) => {if (epoch === mediaEpoch) mediaBlobs.delete(url); throw e;}));
+    mediaBlobs.get(url).then((blob) => {
+      if (epoch !== mediaEpoch || !img.isConnected) return;
+      img.src = blob;
+      const a = img.closest("figure").querySelector("[data-tool-download]");
+      a.href = blob;
+    }).catch(() => { img.alt = "Image unavailable; try refreshing"; });
+  });
 }
 // the answer's text with the tool blocks where the model called them
+// math (opt-in, serve/web/math.js): formulas become placeholders before the Markdown runs and are drawn after it
+function answerMarkdown(text) {
+  return settings.math ? StrataMath.markdown(text, markdown) : markdown(text);
+}
 function answerHtml(m) {
-  const imgs = imgStrip(sidecarImageUrls(m));
-  if (!m.tools || !m.tools.length) return imgs + markdown(m.text || "");
+  if (!m.tools || !m.tools.length) return answerMarkdown(m.text || "");
   let html = "", pos = 0;
   m.tools.forEach((t, k) => {
     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
-    if (at > pos) html += markdown(m.text.slice(pos, at));
+    if (at > pos) html += answerMarkdown(m.text.slice(pos, at));
     pos = at;
-    html += toolHtml(t, k);
+    html += toolHtml(t, k) + toolImages(t);
   });
-  return imgs + html + markdown(m.text.slice(pos));
+  return html + answerMarkdown(m.text.slice(pos));
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -804,32 +928,17 @@ function onTool(m, x) {
   if (x.event === "call") {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
   } else if (x.event === "result") {
-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
+    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, images: x.images || [], vision: x.vision === true,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
-}
-// Make the children of `parent` the nodes of `html`, keeping every node that is already identical.  The answer used
-// to be assigned with innerHTML on every streamed chunk, which made each tool block (its icons and the pulsing dot of
-// a running call) a new element dozens of times a second: they flickered and the dot's blink restarted every time.
-// Here only what changed is replaced, so a finished block stays untouched while the text after it grows.
-function patchChildren(parent, html) {
-  const tpl = document.createElement("template");
-  tpl.innerHTML = html;
-  const want = Array.from(tpl.content.childNodes);
-  want.forEach((node, i) => {
-    const have = parent.childNodes[i];
-    if (!have) parent.appendChild(node);
-    else if (!have.isEqualNode(node)) parent.replaceChild(node, have);
-  });
-  while (parent.childNodes.length > want.length) parent.removeChild(parent.lastChild);
 }
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
     det.hidden = false;
     const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
-      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
+    el.querySelector(".think-title").textContent = thinkingNow ? tr("think.now", "Thinking…") :
+      m.thinkSecs != null ? tr("think.for", "Thought for {s} s", {s: fmt(m.thinkSecs, 1)}) : tr("think.done", "Thoughts");
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
@@ -844,10 +953,12 @@ function updateAssistant(el, m, streaming) {
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
-    patchChildren(bubble, answerHtml(m));
+    bubble.innerHTML = answerHtml(m);
+    hydrateToolImages(bubble);
+    if (settings.math) StrataMath.hydrate(bubble);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
 function renderChat() {
@@ -855,14 +966,66 @@ function renderChat() {
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
+  renderSidebar();
+  renderParent();
+  renderUndoBar();
   scrollDown(true);
 }
-function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
-function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
+// Follow the answer while the reader has not left (#4014). Asking "am I within 120 px of the bottom?" on every frame pulled
+// the view back after every wheel notch (a notch is about 100 px), so scrolling up during a long answer only worked by
+// dragging the scrollbar. Now the reader's own input lets go (wheel up, a finger or a key moving up, the scrollbar), and a
+// scroll back to the bottom follows again.
+let stickToBottom = true, lastReaderInput = 0;
+const FOLLOW_SLACK = 24, FAR_AWAY = 400, INPUT_WINDOW_MS = 400;
+function followAfterScroll(distance, wasFollowing, msSinceInput) {
+  if (distance <= FOLLOW_SLACK) return true;
+  if (msSinceInput <= INPUT_WINDOW_MS || distance > FAR_AWAY) return false;
+  return wasFollowing;
+}
+function scrollDown(force) {
+  const s = $("chat-scroll");
+  if (force) stickToBottom = true;
+  if (stickToBottom) s.scrollTop = s.scrollHeight;
+}
+(function watchReader() {
+  const s = $("chat-scroll");
+  const touch = () => { lastReaderInput = Date.now(); };
+  s.addEventListener("wheel", (e) => { touch(); if (e.deltaY < 0 && s.scrollTop > 0) stickToBottom = false; }, {passive: true});
+  s.addEventListener("touchmove", touch, {passive: true});
+  s.addEventListener("pointerdown", touch, {passive: true});
+  s.addEventListener("keydown", (e) => {
+    touch();
+    if (["PageUp", "ArrowUp", "Home"].includes(e.key) && e.target === s && s.scrollTop > 0) stickToBottom = false;
+  });
+  s.addEventListener("scroll", () => {
+    stickToBottom = followAfterScroll(s.scrollHeight - s.scrollTop - s.clientHeight, stickToBottom, Date.now() - lastReaderInput);
+  }, {passive: true});
+})();
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  // an svg/html block: flip between its code and its sandboxed preview. Closing the preview also turns scripts off.
+  const pv = e.target.closest("[data-preview-toggle]");
+  if (pv) {
+    const box = pv.closest(".st-code");
+    const on = box.dataset.preview === "true";
+    if (on) delete box.dataset.preview; else box.dataset.preview = "true";
+    pv.setAttribute("aria-pressed", String(!on));
+    pv.setAttribute("aria-label", on ? pv.dataset.previewLabel : tr("preview.showCode", "Show the code"));
+    const fr = box.querySelector("iframe");
+    if (on) fillPreview(fr, false, true);
+    else if (!fr.dataset.opened) fillPreview(fr, false);
+    return;
+  }
+  const rs = e.target.closest("[data-preview-scripts]");
+  if (rs) {
+    const fr = rs.closest(".st-code").querySelector("iframe");
+    const run = fr.dataset.scripts !== "1";
+    if (run && !confirm(tr("preview.confirm", "Run this code with scripts?\n\nIt runs in your browser, cut off from this chat and from the network, but it can still freeze the tab, and it is code the model wrote.\n\nOnly this block, and only until you close the preview."))) return;
+    fillPreview(fr, run);
+    return;
+  }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
@@ -917,7 +1080,12 @@ function assistantMessages(m) {
     const at = Math.min(Math.max(pos, calls[0].at || 0), m.text.length);
     out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
               tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
-    for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
+    for (const t of calls) {
+      const pictures = t.vision ? (t.images || []).filter((im) => safeToolMedia(im.url)) : [];
+      const content = pictures.length ? [{type: "text", text: t.result}, ...pictures.map((im) =>
+        ({type: "image_url", image_url: {url: "strata-tool-media:" + im.url.split("/").pop()}}))] : t.result;
+      out.push({role: "tool", tool_call_id: t.id, content});
+    }
     pos = at;
   }
   const rest = m.text.slice(pos).trim();
@@ -925,29 +1093,124 @@ function assistantMessages(m) {
   return out;
 }
 
+function busyHint() {
+  const mode = settings.whileBusy;
+  return mode === "queue" ? tr("composer.hintQueue", "Enter sends when the answer is done")
+       : mode === "interject" ? tr("composer.hintInterject", "Enter stops the answer here and sends now") : "";
+}
+// While an answer is written, Send is off ("wait", as always) or parks the message ("queue", "interject": Chat settings)
+const parksWhileBusy = () => settings.whileBusy === "queue" || settings.whileBusy === "interject";
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  $("send-btn").disabled = (on && !parksWhileBusy()) || !!panel;
+  $("input").disabled = !!panel;
+  $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
+                                         : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
+  if (settings.chatEdit) syncActions();                 // the buttons follow the state: none under the answer being written
+  $("s-list").disabled = $("s-edit").disabled = !!busy || !!panel;      // they change the messages on the screen
+  renderUndoBar();
+  renderPending();
 }
 
-async function send() {
-  const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy || compacting) return;
-  messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
-                 files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
-  attachments = [];
-  renderAttachments();
-  $("input").value = "";
-  slashClose();                                        // a programmatic clear: no input event fires
-  autosize();
+// A message sent while an answer is being written (#4004). "queue": it waits and goes when the answer is done. "interject": the
+// answer stops where it is (what is written stays, marked interrupted) and the message goes at once; if a tool is running, the
+// tool finishes first. Only one message waits. Off by default: with "wait" the page does nothing, as before.
+function park(p, own) {
+  if (!parksWhileBusy()) return;
+  if (pending) { toast("warn", tr("pending.one", "A message is already waiting"), tr("pending.oneText", "Take it back or wait until it is sent.")); return; }
+  pending = {...p, mode: settings.whileBusy};
+  if (own) { attachments = []; renderAttachments(); $("input").value = ""; autosize(); }
+  if (pending.mode === "interject") requestCut();
+  setBusy(!!busy);
+}
+function requestCut() {
+  if (!busy || busy.cut) return;
+  if ((busy.msg.tools || []).some((t) => t.state === "running")) { busy.cutAfterTool = true; return; }   // let the tool finish
+  busy.cut = true;
+  busy.controller.abort();
+}
+function renderPending() {
+  let el = $("pending");
+  if (!pending) { if (el) el.remove(); return; }
+  if (!el) {
+    el = node("div", "pending");
+    el.id = "pending";
+    el.setAttribute("role", "status");
+    el.innerHTML = "<span class=\"pending__text\"></span><span class=\"pending__actions\"><button type=\"button\" class=\"st-btn st-btn--secondary\" data-pending-now></button>" +
+      "<button type=\"button\" class=\"st-btn st-btn--secondary\" data-pending-back></button></span>";
+    el.querySelector("[data-pending-now]").onclick = pendingNow;
+    el.querySelector("[data-pending-back]").onclick = releasePending;
+    $("composer").before(el);
+  }
+  const quote = (pending.text || (pending.files[0] || pending.images[0] || {}).name || "").replace(/\s+/g, " ").slice(0, 70);
+  const text = !busy ? tr("pending.ready", "Not sent yet: “{text}”", {text: quote})
+    : pending.mode === "queue" ? tr("pending.queued", "Sends when this answer is done: “{text}”", {text: quote})
+    : busy.cutAfterTool ? tr("pending.afterTool", "Waiting for the tool to finish, then sending: “{text}”", {text: quote})
+    : tr("pending.cutting", "Stopping the answer, then sending: “{text}”", {text: quote});
+  el.querySelector(".pending__text").textContent = text;
+  const now = el.querySelector("[data-pending-now]");
+  now.textContent = busy ? tr("pending.sendNow", "Send now") : tr("pending.send", "Send");
+  now.hidden = !!busy && pending.mode === "interject";            // already on its way
+  el.querySelector("[data-pending-back]").textContent = tr("pending.takeBack", "Take back");
+}
+function pendingNow() {
+  if (!pending) return;
+  if (busy) { pending.mode = "interject"; requestCut(); setBusy(true); return; }
+  const p = pending;
+  pending = null;
+  setBusy(false);
+  send(p);
+}
+// the waiting message goes back into the message box (a chat switch or a new chat must not lose it)
+function releasePending() {
+  if (!pending) return;
+  const p = pending;
+  pending = null;
+  if (!$("input").value.trim()) $("input").value = p.text;
+  else $("input").value = `${p.text}\n\n${$("input").value}`;
+  attachments = [...p.images, ...p.files, ...attachments];
+  renderAttachments(); autosize();
+  setBusy(!!busy);
+}
+// after an answer: an interrupted one sends an interjection, a finished one sends a queued message
+function settlePending(cut, finished) {
+  if (!pending) return;
+  if ((pending.mode === "interject" && cut) || (pending.mode === "queue" && finished)) {
+    const p = pending;
+    pending = null;
+    setBusy(false);
+    send(p);
+  }
+}
+
+// the message box (or a parked message, `payload`) becomes a user turn and a reply is asked for
+async function send(payload) {
+  const own = !payload;
+  const p = payload || {text: $("input").value.trim(), images: attachments.filter((a) => a.kind !== "file"),
+                        files: attachments.filter((a) => a.kind === "file")};
+  if (!p.text && !p.images.length && !p.files.length) return;
+  if (panel) return;                                  // something is open above (an edit): finish it first
+  if (busy) { park(p, own); return; }
+  clearUndo();
+  messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
+  if (own) {
+    attachments = [];
+    renderAttachments();
+    $("input").value = "";
+    autosize();
+  }
+  return generateReply();
+}
+// an answer for the messages as they are: the last one is a user turn
+async function generateReply() {
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
   const el = $("chat").lastElementChild;
   const controller = new AbortController();
-  busy = {controller, msg: m};
+  busy = {controller, msg: m, cut: false, cutAfterTool: false};
   setBusy(true);
+  paintLive();
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
@@ -958,10 +1221,7 @@ async function send() {
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
-  if (projectionLoaded()) {
-    body.experimental_speed_projection = !!settings.esp;
-    if (settings.esp && settings.espScale != null) body.projection_scale = +settings.espScale;   // the strength while on
-  }
+  if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
@@ -972,7 +1232,7 @@ async function send() {
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
       try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      if (r.status === 401) msg = tr("toast.keyNeeded", "This server needs an API key: add it under About > Settings.");
       throw new Error(msg);
     }
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -990,9 +1250,13 @@ async function send() {
         if (data === "[DONE]") continue;
         let j;
         try { j = JSON.parse(data); } catch (e) { continue; }
-        if (j.error) throw new Error(j.error.message || "the engine reported an error");
+        if (j.error) throw new Error(j.error.message || tr("toast.engineError", "the engine reported an error"));
         if (j.usage) usage = j.usage;
-        if (j.strata_mcp) onTool(m, j.strata_mcp);
+        if (j.strata_mcp) {
+          onTool(m, j.strata_mcp);
+          // an interjection waited for a running tool: it has its result now, so the answer can stop
+          if (busy.cutAfterTool && !busy.cut && !(m.tools || []).some((t) => t.state === "running")) { busy.cut = true; controller.abort(); }
+        }
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
@@ -1012,157 +1276,61 @@ async function send() {
     }
   } catch (e) {
     if (e.name === "AbortError") m.stopped = true;
-    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
+    else { m.error = e.message || String(e); toast("error", tr("toast.requestFailed", "The request failed"), m.error, 6000); }
   }
+  const cut = busy.cut;                                      // an interjection ended it: kept as written, marked interrupted
+  if (cut) m.interrupted = true;
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
+  const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
-             (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
+    m.meta = tr("chat.tokens", "{n} tokens", {n: fmt(n)}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
+             (projectionLoaded() ? (settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
   } else if (m.stopped) {
-    m.meta = "Stopped";
+    m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
-  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.toolCalls", {one: "{n} tool call", other: "{n} tool calls"}, {n: ran})}`;
+  if (m.limit) m.meta = `${m.meta || ""} · ${tr("chat.toolLimit", "stopped at the limit of {n} tool rounds (mcp.max_rounds)", {n: m.limit})}`;
   busy = null;
   setBusy(false);
+  paintLive();
   if (frame) cancelAnimationFrame(frame);
   updateAssistant(el, m, false);
   saveChat();
   scrollDown();
-  refreshCtx();                                        // the server now knows this request's real prompt size
+  settlePending(cut, !m.stopped && !m.error);
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
-$("stop-btn").onclick = () => {
-  if (busy) busy.controller.abort();
-  else if (compacting) compacting.abort();
-};
+$("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("input").addEventListener("keydown", (e) => {
-  if (slashHits.length) {                              // the palette outranks plain Enter while it is open
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : slashHits.length - 1)) % slashHits.length;
-      slashRender();
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); slashRun(slashHits[slashSel]); return; }
-    if (e.key === "Tab") { e.preventDefault(); $("input").value = "/" + slashHits[slashSel].cmd; slashUpdate(); return; }
-    if (e.key === "Escape") { slashClose(); return; }
-  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", () => { autosize(); slashUpdate(); });
+$("input").addEventListener("input", autosize);
 
-// ------------------------------------------------------------------ slash commands
-// Constructors: "/" opens the palette above the composer; the list filters on the first word while it is being
-// typed. Enter (or a click) runs the highlighted command; Tab completes the word; a word that matches no command
-// is just a message, so pasting "/etc/foo" into a question stays harmless.
-const COMMANDS = [
-  {cmd: "clear", desc: "Clear the chat (6 s undo, the same as the New chat button)"},
-  {cmd: "compact", desc: "Replace the history with a short summary of it, ask follow-ups lighter"},
-];
-const slash = $("slash");
-let slashHits = [], slashSel = 0;
-
-function slashUpdate() {
-  const m = $("input").value.match(/^\/(\S*)/);        // only while the first word is a slash word
-  slashHits = m ? COMMANDS.filter((c) => c.cmd.startsWith(m[1].toLowerCase())) : [];
-  slashSel = 0;
-  slashRender();
-}
-function slashRender() {
-  if (!slashHits.length) { slashClose(); return; }
-  slash.innerHTML = slashHits.map((c, i) =>
-    `<div class="st-slash__item" role="option" data-i="${i}" aria-selected="${i === slashSel}">` +
-    `<span class="st-slash__cmd">/${c.cmd}</span><span class="st-slash__desc">${esc(c.desc)}</span></div>`).join("") +
-    `<div class="st-slash__hint">&uarr;&darr; select &middot; Enter runs &middot; Tab completes &middot; Esc closes</div>`;
-  slash.hidden = false;
-}
-function slashClose() { slashHits = []; slash.hidden = true; }
-function slashRun(c) {
-  $("input").value = "";                               // commands take no argument
-  autosize();
-  slashClose();
-  if (c.cmd === "clear") newChat();
-  else if (c.cmd === "compact") compactChat();
-}
-slash.addEventListener("pointerdown", (e) => {         // pointerdown: keep the textarea's focus, no blur
-  e.preventDefault();
-  const item = e.target.closest(".st-slash__item");
-  if (item) slashRun(slashHits[+item.dataset.i]);
-});
-
-function newChat() {                                   // the button and /clear share this
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (compacting) { toast("warn", "Busy", "Wait for the compaction to finish."); return; }
+// one chat, as before: New chat clears it, with an Undo (with the saved-chats list on, its own New chat button does this job)
+$("new-btn").onclick = () => {
+  if (busy) { stillWriting(); return; }
+  if (panel) { closePanel(); }
+  clearUndo();
+  releasePending();
   if (!messages.length) return;
   const backup = messages;
+  clearToolMedia();
   messages = [];
   saveChat();
   renderChat();
-  ctxMeter = null;                                     // the server has not seen the new (empty) history yet
-  renderCtx();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-}
-$("new-btn").onclick = newChat;
-
-// /compact: one non-streamed turn asks the model to summarize, then the history swaps for that summary as the
-// opening user message. The request rides the same endpoint and key as a normal turn, with the MCP tools off, so
-// the next question starts from a page instead of the whole scroll back.
-const COMPACT_PROMPT = ("Summarize the conversation above in up to 120 words of plain text: what was asked, what was " +
-  "built or decided, the names of files, tools and links that matter, the open questions and the next steps. " +
-  "A compact list is fine; no headings, no commentary about this instruction itself.");
-let compacting = null;                                 // the AbortController while a compaction turn runs
-
-async function compactChat() {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (compacting) return;
-  if (messages.length < 2) { toast("info", "Nothing to compact", "Chat a little first."); return; }
-  const before = messages.reduce((n, m) => n + (m.text || "").length + (m.reasoning || "").length +
-                                         (m.tools || []).reduce((t, tool) => t + (tool.result || "").length, 0), 0);
-  const ctrl = new AbortController();
-  compacting = ctrl;
-  setBusy(true);
-  $("composer-hint").textContent = "Compacting\u2026";
-  toast("info", "Compacting", "Asking the model to summarize the chat.");
-  const ask = apiMessages().concat([{role: "user", content: COMPACT_PROMPT}]);
-  try {
-    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true),
-      body: JSON.stringify({model: health.model, messages: ask, stream: false, max_tokens: 800}),
-      signal: ctrl.signal});
-    if (!r.ok) {
-      let msg = `HTTP ${r.status}`;
-      try { msg = (await r.json()).error.message || msg; } catch (err) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
-      throw new Error(msg);
-    }
-    const j = await r.json();
-    if (j.error) throw new Error(j.error.message || "the engine reported an error");
-    const d = (j.choices && j.choices[0] && j.choices[0].message) || {};
-    const summary = ((d.content || "").trim() || (d.reasoning_content || "").trim());
-    if (!summary) throw new Error("the model answered nothing");
-    messages = [{role: "user", text: "[Compacted chat]\n" + summary, time: Date.now()}];
-    saveChat();
-    renderChat();
-    scrollDown(true);
-    toast("success", "Compacted", `${fmt(before)} → ${fmt(summary.length)} characters.`, 8000);
-  } catch (e) {
-    if (e.name === "AbortError") toast("info", "Compaction cancelled", "The history is unchanged.");
-    else toast("error", "Compacting failed", e.message || String(e), 6000);
-  } finally {
-    compacting = null;
-    setBusy(false);
-    ctxMeter = null;                                   // stale anyway: the summary has not been a turn yet
-    renderCtx();
-  }
-}
+  toast("info", tr("chat.newToast", "New chat"), tr("chat.clearedToast", "The last one was cleared."), 6000, {label: tr("undo", "Undo"), run: () => {
+    if (busy || messages.length) return;                         // a new question since: the cleared chat is not put back over it
+    messages = backup; saveChat(); renderChat();
+  }});
+};
 $("export-btn").onclick = () => {
-  if (!messages.length) { toast("info", "Nothing to save yet"); return; }
+  if (!messages.length) { toast("info", tr("export.nothing", "Nothing to save yet")); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
@@ -1185,19 +1353,20 @@ function isTextFile(f) {
 function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
-      if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
-      if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
+      if (!health.images) { toast("warn", tr("file.picturesOff", "Pictures are off"), tr("file.picturesOffText", "This model was set up for text only.")); continue; }
+      if (f.size > 20e6) { toast("warn", tr("file.pictureBig", "Picture too large"), tr("file.pictureBigText", "{name} is over 20 MB.", {name: f.name})); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
+      r.onload = () => { attachments.push({kind: "image", name: f.name || tr("file.pasted", "pasted image"), url: r.result}); renderAttachments(); };
       r.readAsDataURL(f);
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
-    if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
+    if (!isTextFile(f)) { toast("warn", tr("file.notText", "Not a text file"), health.images ? tr("file.notTextPictures", "{name}: attach text files (code, notes, logs, data) or pictures.", {name: f.name})
+                                                              : tr("file.notTextOnly", "{name}: attach text files (code, notes, logs, data).", {name: f.name})); continue; }
+    if (f.size > MAX_TEXT_FILE) { toast("warn", tr("file.big", "File too large"), tr("file.bigText", "{name} is over 512 KB.", {name: f.name})); continue; }
     const r = new FileReader();
     r.onload = () => {
       const text = String(r.result);
-      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
+      if (text.includes("\u0000")) { toast("warn", tr("file.notText", "Not a text file"), tr("file.binaryText", "{name} looks like a binary file.", {name: f.name})); return; }
       attachments.push({kind: "file", name: f.name, text});
       renderAttachments();
     };
@@ -1224,7 +1393,7 @@ function renderAttachments() {
     c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
     c.append(a.name);
     const x = document.createElement("button");
-    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
+    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", tr("file.remove", "Remove"));
     x.innerHTML = icon("trash");
     x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
     c.appendChild(x);
@@ -1256,107 +1425,57 @@ $("input").addEventListener("paste", (e) => {
   if (files.length) { e.preventDefault(); addFiles(files); }
 });
 
-// ------------------------------------------------------------------ the sampling drawer
+// ------------------------------------------------------------------ the chat settings drawer
 function openDrawer(open) {
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").hidden = !open;
   if (open) { loadDrawer(); loadShared(); loadMcp(); }
 }
+const checked = (id) => $(id).getAttribute("aria-checked") === "true";
+const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
-  $("s-esp-scale").value = s.espScale == null ? 1 : s.espScale;
-  $("esp-scale-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  $("s-list").setAttribute("aria-checked", String(!!s.chatList));
+  $("s-edit").setAttribute("aria-checked", String(!!s.chatEdit));
+  for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
   outputs();
 }
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
-// The vector keys belong to the "Bỏ kiểm duyệt - app khác" switch and thinking_off to "Thinking - mọi app": sharing
-// the sampling neither sets nor clears them.
 let sharedOn = false;
-const VEC_KEYS = ["experimental_speed_projection", "projection_scale", "thinking_off"];
-const vecPart = (d) => Object.fromEntries(Object.entries(d || {}).filter(([k]) => VEC_KEYS.includes(k)));
-async function serverShared() {
-  const r = await fetch("settings", {headers: headers()});
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return (await r.json()).defaults || {};
-}
-async function postShared(d) {
-  const w = await fetch("settings", {method: "POST", headers: headers(true),
-                                     body: JSON.stringify({defaults: Object.keys(d).length ? d : null})});
-  if (!w.ok) {
-    let msg = `HTTP ${w.status}`;
-    try { msg = (await w.json()).error.message || msg; } catch (e) { /* not json */ }
-    throw new Error(msg);
-  }
-  const d2 = (await w.json()).defaults || {};
-  sharedOn = Object.keys(d2).some((k) => !VEC_KEYS.includes(k));
-  return d2;
-}
 async function loadShared() {
-  let defaults = {};
   try {
-    defaults = await serverShared();
-    sharedOn = Object.keys(defaults).some((k) => !VEC_KEYS.includes(k));
+    const r = await fetch("settings", {headers: headers()});
+    if (r.ok) sharedOn = !!(await r.json()).shared;
   } catch (e) { /* an older server: the switch just stays off */ }
   $("s-share").setAttribute("aria-checked", String(sharedOn));
-  $("esp-all-row").hidden = !projectionLoaded();
-  $("s-esp-all").setAttribute("aria-checked", String(defaults.experimental_speed_projection !== false));
-  $("s-think-all").setAttribute("aria-checked", String(!defaults.thinking_off));
 }
-// "Thinking - mọi app": thinking_off in the shared settings turns the thinking off for every request, this chat's too
-$("s-think-all").onclick = async () => {
-  const sw = $("s-think-all"), on = sw.getAttribute("aria-checked") !== "true";
-  sw.disabled = true;
-  try {
-    const d = {...(await serverShared())};
-    if (on) delete d.thinking_off; else d.thinking_off = true;
-    const d2 = await postShared(d);
-    $("s-share").setAttribute("aria-checked", String(sharedOn));
-    sw.setAttribute("aria-checked", String(!d2.thinking_off));
-    toast("success", on ? "Thinking: BẬT cho mọi app" : "Thinking: TẮT cho mọi app",
-          on ? "Mỗi app lại tự chọn mức suy nghĩ của nó." : "Chat này, Claude Code, AI-Gateway, Mac trả lời không suy nghĩ từ request kế tiếp.");
-  } catch (e) {
-    toast("error", "Không đổi được", e.message, 6000);
-  } finally {
-    sw.disabled = false;
-  }
-};
-// "Bỏ kiểm duyệt - app khác": only the vector key of the shared settings, the others kept; applied at once
-$("s-esp-all").onclick = async () => {
-  const sw = $("s-esp-all"), on = sw.getAttribute("aria-checked") !== "true";
-  sw.disabled = true;
-  try {
-    const d = {...(await serverShared())};
-    if (on) { delete d.experimental_speed_projection; delete d.projection_scale; } else d.experimental_speed_projection = false;
-    const d2 = await postShared(d);
-    $("s-share").setAttribute("aria-checked", String(sharedOn));
-    sw.setAttribute("aria-checked", String(d2.experimental_speed_projection !== false));
-    toast("success", on ? "Bỏ kiểm duyệt: BẬT cho app khác" : "Bỏ kiểm duyệt: TẮT cho app khác",
-          "Claude Code, AI-Gateway, Mac dùng từ request kế tiếp (lượt đầu có thể đọc lại context).");
-  } catch (e) {
-    toast("error", "Không đổi được", e.message, 6000);
-  } finally {
-    sw.disabled = false;
-  }
-};
 function sharedDefaults(s) {
   const d = {reasoning_effort: s.thinking};
   if (!(+s.temperature > 0)) d.temperature = 0;
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
+  if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
   return d;
 }
 async function saveShared(on, s) {
-  const vec = vecPart(await serverShared());          // keep the "app khác" vector choice as it is
-  await postShared(on ? {...sharedDefaults(s), ...vec} : vec);
+  const r = await fetch("settings", {method: "POST", headers: headers(true),
+                                      body: JSON.stringify({defaults: on ? sharedDefaults(s) : null})});
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
+    throw new Error(msg);
+  }
+  sharedOn = !!(await r.json()).shared;
 }
 // the engine was started with the experimental-speed-projection control vector (INFO cvec=...)
 function projectionLoaded() {
@@ -1365,60 +1484,99 @@ function projectionLoaded() {
 }
 function outputs() {
   const t = +$("s-temp").value;
-  $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
+  $("o-temp").textContent = t === 0 ? tr("drawer.greedy", "0 · greedy") : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
+  const sel = segValue("s-thinking");
+  $("o-thinking").textContent = sel ? {none: tr("drawer.thinkNone", "answers right away"), low: tr("drawer.thinkLow", "short"),
+    medium: tr("drawer.thinkMedium", "medium"), high: tr("drawer.thinkHigh", "thorough (default)")}[sel] : "";
+  const busyMode = segValue("s-busy");
+  $("o-busy").textContent = {wait: tr("drawer.busyWaitNote", "Send is off until the answer is done, as before."),
+    queue: tr("drawer.busyQueueNote", "Your message waits and goes as soon as the answer is done."),
+    interject: tr("drawer.busyInterjectNote", "The answer stops where it is (what is written stays) and your message goes at once. A tool that is running finishes first.")}[busyMode] || "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
-  const es = +$("s-esp-scale").value;
-  $("o-esp-scale").textContent = es === 0 ? "0 · model gốc" : es.toFixed(2);
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
-for (const id of ["s-temp", "s-topp", "s-topk", "s-esp-scale"]) $(id).oninput = outputs;
-$("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
-$("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
-$("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
-$("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
+for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
+for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-edit"]) {
+  $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
+}
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
+  const prev = settings;
+  // the list and the edit controls change the messages on the screen: not while an answer is written or something is open
+  const locked = !!busy || !!panel;
+  settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
-              show: $("s-show").getAttribute("aria-checked") === "true",
-              esp: $("s-esp").getAttribute("aria-checked") === "true",
-              espScale: +$("s-esp-scale").value,
-              mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
+              math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
+              chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
+              whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
-  const share = $("s-share").getAttribute("aria-checked") === "true";
+  StrataMath.reset();                                  // math on or off: every answer is drawn again
+  if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
+  if (settings.chatEdit !== !!prev.chatEdit) { clearUndo(); syncActions(); }
+  if (settings.whileBusy === "wait" && pending) releasePending();    // "wait" parks nothing: a waiting message goes back to the box
+  setBusy(!!busy);
+  for (const el of $("chat").querySelectorAll(".st-msg--assistant")) {
+    const m = messages[+el.dataset.i];
+    updateAssistant(el, m, !!busy && busy.msg === m);  // the element send() holds stays the same while an answer streams
+  }
+  const share = checked("s-share");
   openDrawer(false);
   if (share || sharedOn) {
     try {
       await saveShared(share, settings);
-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
-                                               : "Other apps use their own settings again.");
+      toast("success", tr("drawer.saved", "Chat settings saved"), share ? tr("drawer.savedShared", "Other apps (omp, API clients) use these settings from their next request.")
+                                                                         : tr("drawer.savedOwn", "Other apps use their own settings again."));
     } catch (e) {
-      toast("error", "Saved here, but not for other apps", e.message, 6000);
+      toast("error", tr("drawer.savedHere", "Saved here, but not for other apps"), e.message, 6000);
     }
     return;
   }
-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
+  toast("success", tr("drawer.saved", "Chat settings saved"), settings.temperature === 0 ? tr("drawer.savedGreedy", "Greedy: the same question gives the same answer.") : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
+// ------------------------------------------------------------------ language (serve/web/i18n.js)
+// The user's own choice, kept in this browser: English until they pick another. /?lang=de shows one for this visit only.
+const urlLang = new URLSearchParams(location.search).get("lang");
+$("lang").innerHTML = StrataI18n.LANGUAGES.map(([code, name]) => `<option value="${esc(code)}">${esc(name)}</option>`).join("");
+function showLanguage() {
+  $("lang").value = StrataI18n.lang;
+  renderEmptyChat();
+  setSidebar(sidebarOpen, false);
+  outputs();
+  renderChat();
+  setBusy(!!busy);
+  if (lastMetrics) render(lastMetrics);
+}
+$("lang").onchange = async () => {
+  store.set("lang", $("lang").value);
+  await StrataI18n.setLanguage($("lang").value);
+  showLanguage();
+};
+
 // ------------------------------------------------------------------ start
-setBusy(false);
-renderChat();
-const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
-if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } })
-       .then(refreshCtx).catch(() => { });
-setInterval(() => refreshCtx(), 30000);                // other apps can fill the same engine meanwhile
-showTab(location.hash.slice(1) || "chat");
-poll();
+async function start() {
+  await StrataI18n.setLanguage(urlLang || store.get("lang", "en"));
+  $("lang").value = StrataI18n.lang;
+  renderEmptyChat();
+  initChats();
+  if (settings.chatList) await setChatList(true, false);       // the saved-chats list is read before the first draw
+  setBusy(false);
+  renderChat();
+  const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
+  if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
+  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+  showTab(location.hash.slice(1) || "chat");
+  poll();
+  requestAnimationFrame(fitHeader);
+}
+start();
 
 // ------------------------------------------------------------------ images (POST /v1/images/generations)
 $("img-form").onsubmit = async (ev) => {
@@ -1427,7 +1585,9 @@ $("img-form").onsubmit = async (ev) => {
   if (!prompt) return;
   const body = {prompt, size: $("img-size").value, response_format: "b64_json"};
   if ($("img-seed").value !== "") body.seed = Number($("img-seed").value);
+  imageBusy = true;
   $("img-go").disabled = true;
+  paintLive();
   const t0 = performance.now();
   $("img-hint").textContent = "Generating\u2026 (a minute or more on a small GPU)";
   try {
@@ -1449,6 +1609,8 @@ $("img-form").onsubmit = async (ev) => {
     $("img-hint").textContent = "";
     toast("error", "No image", String(e.message || e), 8000);
   } finally {
+    imageBusy = false;
     $("img-go").disabled = false;
+    paintLive();
   }
 };

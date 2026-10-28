@@ -70,6 +70,10 @@ build-vision-cuda12.bat
 
 /expert-profile-learned*.bin
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 
