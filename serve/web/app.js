@@ -155,16 +155,21 @@ $("metrics").innerHTML = METRICS.map((m) => `
 function spark(id, values, max) {
   const svg = $(id);
   const v = (values || []).map((x) => (x == null ? 0 : x));
-  if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
+  if (v.length < 2) { svg._line = null; svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
   const top = Math.max(max || 0, ...v, 1);
   const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
   const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
+  if (svg._line === line) return;                  // the same sample twice: leave the DOM alone
+  svg._line = line;
   svg.querySelector(".line").setAttribute("d", line);
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
 function setMetric(key, value, unit, sub) {
-  $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+  const el = $(`mv-${key}`);
+  const html = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }   // a poll with the same value must not repaint the card
+  const subEl = $(`ms-${key}`);
+  if (subEl.textContent !== (sub || "")) subEl.textContent = sub || "";
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -173,6 +178,7 @@ let metricsEpoch = 0;
 // poll agrees, or until the first poll that started after the POST arrives. (PR #3550 by sakuumomo)
 let metricsHold = null;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
+let reqSig = "";          // the rows' signature: a poll with the same finished requests must not rebuild the table
 function metricsAgree(live, state) {
   const s = (live && live.state) || "";
   if (state === "unloaded") return s === "unloaded";
@@ -582,26 +588,33 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 
   // recent requests
   const body = $("req-body");
-  if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
-  } else {
-    const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
-                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
-                   timeout: ["st-badge--queued", "Timeout"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
-      const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
-      const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
-      // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
-      const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
-        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
-      // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
-      const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
-      const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
-    }).join("");
+  const shown = requests.slice(0, reqShowAll ? requests.length : 12);
+  const sig = `${reqShowAll}|${kept == null ? requests.length : kept}|` + JSON.stringify(shown);
+  if (sig !== reqSig) {
+    reqSig = sig;
+    const wrap = $("req-wrap"), top = wrap.scrollTop;
+    if (!shown.length) {
+      body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
+    } else {
+      const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
+                     disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
+                     timeout: ["st-badge--queued", "Timeout"]};
+      body.innerHTML = shown.map((r) => {
+        const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
+        const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+        const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="bỏ kiểm duyệt ${r.projection ? "bật" : "tắt"}">${r.projection ? "UNC" : "gốc"}</span>`;
+        // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
+        const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
+          (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
+        // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
+        const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
+        const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
+        return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+          <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+          <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+      }).join("");
+    }
+    wrap.scrollTop = top;
   }
   const all = $("req-all");
   kept = kept == null ? requests.length : kept;
@@ -621,8 +634,8 @@ function projectionText(c) {
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
   return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
-         "describes the vector as a refusal-direction projection; measure the speed yourself";
+         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Bật/tắt theo từng chat trong Sampling. ` +
+         "Vector bỏ kiểm duyệt (refusal-direction projection): bật thì model từ chối ít hơn hẳn — bạn chịu trách nhiệm về nội dung sinh ra";
 }
 function renderAbout(eng, hw, st) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
@@ -634,7 +647,7 @@ function renderAbout(eng, hw, st) {
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
-    ["Experimental speed projection", projectionText(eng.cvec)],
+    ["Bỏ kiểm duyệt (Uncensored)", projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
     ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
@@ -842,7 +855,7 @@ function markdown(text) {
 // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
+const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, espScale: 1, mcp: true, math: false,
                   chatList: false, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
@@ -1292,7 +1305,10 @@ async function generateReply() {
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
-  if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
+  if (projectionLoaded()) {
+    body.experimental_speed_projection = !!settings.esp;
+    if (settings.esp && settings.espScale != null) body.projection_scale = +settings.espScale;   // the strength while on
+  }
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
@@ -1580,6 +1596,8 @@ function loadDrawer(s = settings) {
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
+  $("s-esp-scale").value = s.espScale == null ? 1 : s.espScale;
+  $("esp-scale-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
@@ -1602,7 +1620,10 @@ function sharedDefaults(s) {
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
-  if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
+  if (projectionLoaded()) {
+    d.experimental_speed_projection = s.esp !== false;
+    if (s.esp !== false && s.espScale != null) d.projection_scale = +s.espScale;
+  }
   return d;
 }
 async function saveShared(on, s) {
@@ -1633,10 +1654,12 @@ function outputs() {
     queue: tr("drawer.busyQueueNote", "Your message waits and goes as soon as the answer is done."),
     interject: tr("drawer.busyInterjectNote", "The answer stops where it is (what is written stays) and your message goes at once. A tool that is running finishes first.")}[busyMode] || "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
+  const es = +$("s-esp-scale").value;
+  $("o-esp-scale").textContent = es === 0 ? "0 · model gốc" : es.toFixed(2);
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
-for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+for (const id of ["s-temp", "s-topp", "s-topk", "s-esp-scale"]) $(id).oninput = outputs;
 for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-edit"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
@@ -1647,7 +1670,8 @@ $("s-apply").onclick = async () => {
   const locked = !!busy || !!panel;
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
-              math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
+              math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"),
+              espScale: +$("s-esp-scale").value, mcp: checked("s-mcp"),
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
