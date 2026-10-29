@@ -1,8 +1,8 @@
 # Strata local — Playbook tốc độ (Qwen3.8 Q2_0 & DeepSeek 1.75)
 
 Máy: RTX 3060 12 GB, i7-14700K (20 core / 28 thread), 48 GB RAM, Windows.
-Engine 0.1.51, pack Q2_0 / DeepSeek 1.75bpw, router 8081.
-Cập nhật: 27/10/2026.
+Engine 0.1.52, pack Q2_0, router v1.2 (chỉ còn qwen — DeepSeek ds41f đã xoá 29/10).
+Cập nhật: 29/10/2026.
 
 Mọi số "đo" dưới đây là đo trên máy này bằng log engine (`strata serve: prompt … read in … ms`,
 `… generated in … ms (… tok/s)`), không phải suy đoán. Số "docs" là từ `docs/DETAILS.md`.
@@ -36,6 +36,8 @@ Mọi số "đo" dưới đây là đo trên máy này bằng log engine (`strat
 | 8 | opencode: `"reasoning": true` + `options.reasoningEffort = low` | opencode gửi **không có field effort** | gửi `reasoning_effort: "low"` | đo bằng proxy, không phải đọc code |
 | 9 | Router 1.1: gộp model vào `/metrics`, `POST /v1/load` nền | web chỉ thấy qwen+ornith | web thấy qwen + DeepSeek | switch qwen↔ds 30–40 s |
 | 10 | Xoá Ornith (42 GB) | picker có ornith | picker còn 2 model | D: +41.9 GB |
+| 11 | **Xoá DeepSeek ds41f-1017** (29/10) | D: dùng 521 GB, PLE probe **12.7K rows/s (WARN)** | D: dùng 297 GB, PLE probe **153K rows/s (fine)** | -224 GB; `pagefile C:` không còn bị 95% đầy kéo theo |
+| 12 | Cờ mới chưa từng A/B (29/10): `--short-read 128`, `--prompt-cache-spread`, `--mtp-q4 all`, `env: STRATA_EXPDEC=1, STRATA_PLE_AUTO_MMAP=1`, `env_to_user/tool_call_recovery/anthropic_thinking` (server) | baseline: 13K 904 / 55K 989 tok/s, decode ngắn median 73.3 | 13K **897.5** / 55K **978.5** (±1%, không giảm), decode cached **92–99.6** tok/s, drafts accepted 94–95%; mtp-q4 nhả 183 MiB đầu draft nhưng expert slot **không tăng** (3376 vs 3405 = nhiễu WDDM) | router v1.2 + `/v1/load {"restart":true}`; theo dõi KL/accept vài ngày, revert `--mtp-q4` nếu accept giảm |
 
 Các thay đổi "hình thức" khác: vision ds41f (không ảnh hưởng tốc độ text), `env_to_user`
 chưa bật, `aliases` qwen38-orca-q2k.
@@ -276,6 +278,11 @@ Biến môi trường đặt ở đâu:
 ---
 
 ## 7. Ứng viên CHƯA dùng — nên thử, xếp theo tiềm năng
+
+> 29/10: #1 (`--mtp-q4 all`, chưa kèm draft-vocab), #2 (EXPDEC), #6 (`--prompt-cache-spread`)
+> và `--short-read 128` + ba server keys (#9 env_to_user, #10 anthropic_thinking, #12
+> tool_call_recovery) đã bật — kết quả đo ở mục 1 dòng 12. #3 `--pool-tasks`, #4 UPMIX/REQ8,
+> #5 short-read 256, #7 head-alias còn mở.
 
 > Cách đo: `.orca\bench-ab.py` hoặc `.orca\bench-code.py`. Mỗi lần đổi config: sửa file →
 > `POST /v1/load` sang ds rồi về qwen (30–40 s mỗi chiều).

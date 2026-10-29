@@ -1,4 +1,4 @@
-# Local stack: router 8081 + Qwen3.8 Q2_0 + DeepSeek V4.1 1.75bpw
+# Local stack: router 8081 + Qwen3.8 Q2_0 (DeepSeek ds41f removed 29/10/2026)
 
 Bản lưu các file đang chạy trên máy này (27/10/2026) để không mất khi cài lại.
 Chi tiết số đo và toàn bộ flag: [`../tok-speed-playbook.md`](../tok-speed-playbook.md).
@@ -6,9 +6,9 @@ Chi tiết số đo và toàn bộ flag: [`../tok-speed-playbook.md`](../tok-spe
 ```
 app / opencode / web
         |
-   router 8081  (model-router.py)
-     |        |
- qwen 18080  deepseek 8080   (chỉ một cái chạy tại một thời điểm)
+   router 8081  (model-router.py v1.2)
+        |
+   qwen 18080   (deepseek 8080 đã xoá ngày 29/10)
 ```
 
 ## File nào đi đâu
@@ -18,20 +18,21 @@ app / opencode / web
 | `model-router.py` | `%LOCALAPPDATA%\strata-stack\model-router.py` |
 | `run-router.bat` | `%LOCALAPPDATA%\strata-stack\run-router.bat` |
 | `qwen.config.example.json` | `D:\GitHub\Strata\strata-q2_0-v144-refusal.json` — **điền `api_key`** |
-| `ds41f.preset.json` | `%LOCALAPPDATA%\Strata\launch\ds41f.json` (Terminal tự tạo lại khi `strata launch`) |
+| `ds41f.preset.json` | preset sống (`%LOCALAPPDATA%\Strata\launch\ds41f.json`) đã xoá 29/10 cùng DeepSeek; bản này chỉ còn lưu trữ |
 | `opencode.example.json` | merge vào `~/.config/opencode/opencode.json` — **điền key cloud** |
 | `pr4178-vision.patch` / `pr4193-launch-options.patch` | áp cho Terminal sau khi update (xem dưới) |
 
 `api_key` trong hai file example là chỗ giữ (**không** commit key thật).
 
-## Router 1.1 làm gì
+## Router 1.2 làm gì
 
-- `model` của request chứa `deepseek`/`ds41` → DeepSeek 8080; chứa `qwen`/`ornith` → qwen 18080;
-  còn lại mặc định DeepSeek.
-- Trước khi bật model này, **dừng model kia** (một engine chiếm 12 GB).
-- `/v1/models`: liệt kê cả hai.
-- `/metrics`: lấy của backend đang chạy rồi **gộp danh sách model** (qwen + DeepSeek) để
-  thanh chọn model trên web thấy cả hai.
+- Model duy nhất: qwen (`qwen38-q2_0-refusal` + aliases). Request còn gọi
+  `deepseek`/`ds41` nhận 404 `model_removed` (không âm thầm rơi sang engine khác).
+- `POST /v1/load {"model": ..., "restart": true}`: bật lại engine sau khi sửa config
+  (không còn DS để mà "đi nhờ" như trước).
+- `/v1/models`: liệt kê qwen (+ aliases từ config).
+- `/metrics`: lấy của backend đang chạy rồi **gộp danh sách model** để
+  thanh chọn model trên web đọc đúng nguồn.
 - `POST /v1/load {"model": ...}`: chạy switch ở nền, trả 202 ngay; trong lúc switch
   `/metrics` trả cache cũ kèm `models.switching` để web hiện "Switching to ...".
 - `/health`, `/v1/status`: hợp nhất; khi đang switch trả trạng thái tạm.
@@ -67,9 +68,12 @@ app / opencode / web
   --spec 4 --spec-min-p 0.7 --vram-reserve-mib 1472`, conversation cache 10 GB / 6 slot.
 - qwen keys: `reasoning_effort: "low"`, `reasoning_budget_tokens: 12288`,
   `effort_position: "end"`, `models: []`.
-- DeepSeek: pack 1.75bpw, `--ssd-cache 36`, `--dspark auto`, `--max-context 262144`.
+- ~~DeepSeek: pack 1.75bpw, `--ssd-cache 36`, `--dspark auto`, `--max-context 262144`~~ — đã xoá 29/10.
 
 ## Terminal update làm mất patch vision
+
+(Không còn hiệu lực từ 29/10: patch này chỉ để DeepSeek đọc ảnh, mà DeepSeek đã bị xoá.
+Ghi lại để nếu cài lại DS41 làm đúng các bước dưới.)
 
 Terminal 0.1.51 đã được patch `serve/server.py` + `serve/dsv41_vision.py` (+ `setup.py`) để
 DeepSeek đọc ảnh. Update Terminal sẽ ghi đè. Cách làm lại:

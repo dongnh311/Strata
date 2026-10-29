@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""model-router: one OpenAI/Anthropic endpoint in front of two local models.
+"""model-router v1.2: one OpenAI/Anthropic endpoint in front of the local qwen engine.
 
-A request's `model` field selects the engine:
-  * contains "qwen" or "ornith"     -> qwen serve  (port 18080, config strata-q2_0-v144-refusal.json)
-  * contains "deepseek" or "ds41"   -> DeepSeek    (port 8080, terminal preset "ds41f")
-Default: DeepSeek. Before starting one model the other is stopped, so only one
-engine ever holds the 12 GB card. Logs to %LOCALAPPDATA%\\strata-stack\\model-router.log
+A request's `model` field must name the qwen family ("qwen" or "ornith"); anything
+that still asks for DeepSeek ("deepseek", "ds41") gets a clear 404 - the model and
+its preset were removed from this machine on 2026-10-29, they must not silently
+route to the wrong engine. Empty or placeholder names stay on the active engine
+(the page sends its current model once /health has answered).
 
-The web page (served by the active engine) lists its models from /metrics.  This
-router rewrites that list to include the other engine too, and answers
-POST /v1/load by starting/switching the engine in the background, so the model
-picker in the page can reach both models.
+The web page (served from the checkout by this router) lists its models from
+/metrics; POST /v1/load answers with {"restart": true} to bounce the engine after
+a config change without a second model to switch through.
+Logs to %LOCALAPPDATA%\\strata-stack\\model-router.log
 """
 import http.client
 import http.server
 import json
+import mimetypes
 import os
 import socket
 import subprocess
@@ -24,11 +25,12 @@ from pathlib import Path
 
 HOME = Path(r"D:\GitHub\Strata")
 STACK = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\ADMIN\AppData\Local")) / "strata-stack"
+WEB_DIR = HOME / "serve" / "web"
 LOG = STACK / "model-router.log"
 VENV_PY = HOME / ".venv" / "Scripts" / "python.exe"
 QWEN_CFG = HOME / "strata-q2_0-v144-refusal.json"
-QWEN_PORT, DS_PORT = 18080, 8080
-QWEN_ID, DS_ID = "qwen38-q2_0-refusal", "deepseek-v4.1-flash"
+QWEN_PORT = 18080
+QWEN_ID = "qwen38-q2_0-refusal"
 PORT = int(os.environ.get("MODEL_ROUTER_PORT", "8081"))
 NO_WINDOW = 0x08000000
 
@@ -81,48 +83,45 @@ def backend_status(port, key=None):
         return None
 
 
-def ready(model):
-    port = QWEN_PORT if model == "qwen" else DS_PORT
-    st = backend_status(port, qwen_key() if model == "qwen" else None)
+def ready():
+    st = backend_status(QWEN_PORT, qwen_key())
     return bool(st and st.get("loaded"))
 
 
+def detect_active():
+    """The router can be restarted while an engine stays up."""
+    return "qwen" if (listening(QWEN_PORT) and ready()) else None
+
+
 def active_port():
-    return QWEN_PORT if _active == "qwen" else DS_PORT
+    global _active
+    if _active is None:
+        _active = detect_active()
+    return QWEN_PORT
 
 
-def current_id(model=None):
-    m = model or _active
-    if m == "ds":
-        return DS_ID
-    if m == "qwen":
-        st = _last_status.get(QWEN_PORT) or {}
-        return ((st.get("models") or {}).get("current")) or QWEN_ID
-    return None
+def current_id():
+    st = _last_status.get(QWEN_PORT) or {}
+    return ((st.get("models") or {}).get("current")) or (QWEN_ID if _active else None)
 
 
 def known_ids():
     avail = []
-    for port in (QWEN_PORT, DS_PORT):
-        for n in ((((_last_status.get(port) or {}).get("models") or {}).get("available")) or []):
-            if isinstance(n, str) and n not in avail:
-                avail.append(n)
-    for n in (QWEN_ID, DS_ID):
-        if n not in avail:
+    for n in ((((_last_status.get(QWEN_PORT) or {}).get("models") or {}).get("available")) or []):
+        if isinstance(n, str) and n not in avail:
             avail.append(n)
+    if QWEN_ID not in avail:
+        avail.append(QWEN_ID)
     return avail
 
 
 def merged_models(backend=None):
     bm = dict(backend or {})
     avail = [n for n in (bm.get("available") or []) if isinstance(n, str)]
-    for n in (QWEN_ID, DS_ID):
-        if n not in avail:
-            avail.append(n)
+    if QWEN_ID not in avail:
+        avail.append(QWEN_ID)
     cur = bm.get("current")
-    if _active == "ds":
-        cur = DS_ID
-    elif _active == "qwen" and not cur:
+    if _active == "qwen" and not cur:
         cur = QWEN_ID
     return {"current": cur, "available": avail,
             "switching": _switching if _switching else bm.get("switching"),
@@ -130,9 +129,8 @@ def merged_models(backend=None):
 
 
 def cached_metrics():
-    for port in (active_port(), QWEN_PORT, DS_PORT):
-        if port in _last_metrics:
-            return json.loads(json.dumps(_last_metrics[port]))
+    if QWEN_PORT in _last_metrics:
+        return json.loads(json.dumps(_last_metrics[QWEN_PORT]))
     return {"live": {"state": "idle"}, "models": {}}
 
 
@@ -161,73 +159,60 @@ def start_qwen():
     log("started qwen on %d" % QWEN_PORT)
 
 
-def start_ds():
-    env = dict(os.environ)
-    env["STRATA_ALLOWED_HOSTS"] = "pc-dik-win.tail1b3f7b.ts.net"
-    out = open(STACK / "ds41-serve.log", "ab")
-    cmd = r"C:\Users\ADMIN\AppData\Local\Strata\terminal\current\bin\strata.cmd"
-    subprocess.Popen([cmd, "launch", "--preset", "ds41f", "--yes", "--no-tui"],
-                     cwd=str(HOME), env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                     creationflags=NO_WINDOW)
-    log("started ds41f on %d" % DS_PORT)
-
-
-def wait_ready(model, seconds=420):
+def wait_ready(seconds=420):
     t0 = time.time()
     while time.time() - t0 < seconds:
-        if ready(model):
+        if ready():
             return True
         time.sleep(2)
     return False
 
 
-def ensure(model):
-    """Make `model` the one loaded model. Serialized; stops the other engine first."""
+def ensure(restart=False):
+    """Make qwen the one loaded model. Serialized; `restart` bounces the engine."""
     global _active
     with _lock:
-        port, other = (QWEN_PORT, DS_PORT) if model == "qwen" else (DS_PORT, QWEN_PORT)
-        other_name = "deepseek" if model == "qwen" else "qwen"
-        if ready(model) and _active == model:
-            return True
-        if listening(other):
-            log("switch %s -> %s: stopping %s" % (_active, model, other_name))
-            kill_port(other)
+        if ready():
+            if not restart and _active == "qwen":
+                return True
+            log("restart: stopping qwen on %d" % QWEN_PORT)
+            kill_port(QWEN_PORT)
             _active = None
-        if ready(model):
-            _active = model
-            return True
-        if listening(port):
-            log("%s listens but is not loaded: restarting it" % model)
-            kill_port(port)
-        log("starting %s (cold start; VRAM %s)" % (model, "free" if not listening(other) else "busy"))
-        (start_qwen if model == "qwen" else start_ds)()
-        ok = wait_ready(model)
+        elif listening(QWEN_PORT):
+            log("qwen listens but is not loaded: restarting it")
+            kill_port(QWEN_PORT)
+        log("starting qwen (cold start)")
+        start_qwen()
+        ok = wait_ready()
         if ok:
-            _active = model
-            log("%s ready" % model)
+            _active = "qwen"
+            log("qwen ready")
         else:
-            log("%s FAILED to become ready" % model)
+            log("qwen FAILED to become ready")
         return ok
 
 
 def pick(model_name):
+    """None means this name is gone from the machine (answer 404)."""
     m = (model_name or "").lower()
-    if "deepseek" in m or "ds41" in m:
-        return "ds"
-    if "qwen" in m or "ornith" in m:
+    if "deepseek" in m or "ds41" in m or "dsv41" in m:
+        return None
+    if "qwen" in m or "ornith" in m or not m:
         return "qwen"
-    return "ds"
+    return "qwen"
 
 
-def do_load(name):
-    """POST /v1/load in the page: start the engine (and, for a qwen config such as
-    ornith, let the qwen server switch inside its own engine)."""
+def do_load(name, restart=False):
+    """POST /v1/load in the page: (re)start the engine and, for a qwen config
+    such as ornith, let the qwen server switch inside its own engine."""
     global _switching
     try:
-        target = pick(name)
-        ok = ensure(target)
-        if ok and target == "qwen":
-            cur = current_id("qwen") or ""
+        if pick(name) is None:
+            log("load %s refused: removed from this machine" % name)
+            return
+        ok = ensure(restart)
+        if ok:
+            cur = current_id() or ""
             if name and name.lower() not in (cur.lower(), "qwen"):
                 try:
                     body = json.dumps({"model": name}).encode()
@@ -248,7 +233,7 @@ def do_load(name):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "model-router/1.1"
+    server_version = "model-router/1.2"
     protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt, *args):
@@ -298,39 +283,68 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _static(self, path):
+        """Serve the UI from the checkout so the page does not change when the active engine does."""
+        rel = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
+        if rel.startswith("web/"):
+            rel = rel[4:]
+        base = WEB_DIR.resolve()
+        try:
+            file = (base / rel).resolve()
+            file.relative_to(base)
+        except (OSError, ValueError):
+            self.send_error(404)
+            return
+        if not file.is_file():
+            self.send_error(404)
+            return
+        data = file.read_bytes()
+        ctype = mimetypes.guess_type(str(file))[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache" if rel == "index.html" else "public, max-age=300")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _route(self, body):
         try:
             name = json.loads(body.decode("utf-8", "replace") or "{}").get("model", "")
         except Exception:
             name = ""
-        model = pick(name)
-        if not ensure(model):
-            self._json(503, {"error": {"type": "router",
-                                       "message": "%s did not start; see model-router.log" % model}})
+        if pick(name) is None:
+            self._json(404, {"error": {"type": "router", "code": "model_removed",
+                                       "message": "%s was removed from this machine (2026-10-29); "
+                                                  "use %s" % (name, QWEN_ID)}})
             return
-        if model == "qwen":
-            self._proxy(QWEN_PORT, qwen_key(), body)
-        else:
-            self._proxy(DS_PORT, None, body)
+        if not ensure():
+            self._json(503, {"error": {"type": "router",
+                                       "message": "qwen did not start; see model-router.log"}})
+            return
+        self._proxy(QWEN_PORT, qwen_key(), body)
 
     def do_OPTIONS(self):
         self.send_response(204)
         for h in ("Access-Control-Allow-Origin", "Access-Control-Allow-Headers",
                   "Access-Control-Allow-Methods"):
-            self.send_header(h, "*" if h != "Access-Control-Allow-Headers" else "*")
+            self.send_header(h, "*")
         self.send_header("Connection", "close")
         self.end_headers()
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path in ("/", "/index.html") or path.startswith("/web/"):
+            self._static(path)
+            return
         if path in ("/health", "/healthz"):
             if _switching or not listening(active_port()):
-                target = (_switching or {}).get("to") or (QWEN_ID if _active == "qwen" else DS_ID)
-                self._json(200, {"status": "ok", "service": "strata", "model": target,
+                self._json(200, {"status": "ok", "service": "strata",
+                                 "model": (_switching or {}).get("to") or QWEN_ID,
                                  "loaded": False, "images": False, "max_context": 262144,
                                  "router": True, "active": _active})
                 return
-            self._proxy(active_port(), qwen_key() if _active == "qwen" else None, b"")
+            self._proxy(QWEN_PORT, qwen_key(), b"")
             return
         if path == "/v1/models":
             self._json(200, {"object": "list", "data": [
@@ -346,19 +360,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                  "switching": _switching, "last_error": None}}
                 self._json(200, st)
                 return
-            port = active_port()
-            if not listening(port):
+            if not listening(QWEN_PORT):
                 self._json(200, {"service": "model-router", "loaded": False, "active": _active,
                                  "models": {"current": None, "available": known_ids(),
                                             "switching": None, "last_error": None}})
                 return
             try:
-                code, st = fetch_json(port, qwen_key() if _active == "qwen" else None, self.path)
+                code, st = fetch_json(QWEN_PORT, qwen_key(), self.path)
                 st["models"] = merged_models(st.get("models"))
-                _last_status[port] = st
+                _last_status[QWEN_PORT] = st
                 self._json(code, st)
             except Exception as e:
-                log("status error on %d: %s" % (port, e))
+                log("status error on %d: %s" % (QWEN_PORT, e))
                 self._json(502, {"error": {"type": "router", "message": str(e)}})
             return
         if path == "/metrics":
@@ -368,34 +381,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                "switching": _switching, "last_error": None}
                 self._json(200, m)
                 return
-            port = active_port()
-            if not listening(port):
+            if not listening(QWEN_PORT):
                 self._json(503, {"error": {"type": "router", "message": "no model loaded yet"}})
                 return
             try:
-                code, m = fetch_json(port, qwen_key() if _active == "qwen" else None, self.path)
+                code, m = fetch_json(QWEN_PORT, qwen_key(), self.path)
                 m["models"] = merged_models(m.get("models"))
-                _last_metrics[port] = m
+                _last_metrics[QWEN_PORT] = m
                 self._json(code, m)
             except Exception as e:
-                log("metrics error on %d: %s" % (port, e))
+                log("metrics error on %d: %s" % (QWEN_PORT, e))
                 self._json(502, {"error": {"type": "router", "message": str(e)}})
             return
         if path == "/mcp":
-            if _active is None and not listening(QWEN_PORT) and not listening(DS_PORT):
+            if _active is None and not listening(QWEN_PORT):
                 self._json(200, {"servers": []})
                 return
-            port = active_port()
-            self._proxy(port, qwen_key() if _active == "qwen" else None, b"")
+            self._proxy(QWEN_PORT, qwen_key(), b"")
             return
-        # the web page and everything else: serve from the active model, default DeepSeek
-        if path in ("/", "/index.html") and _active is None:
-            ensure("ds")
+        # the web page and everything else: serve from the active model
         port = active_port()
         if not listening(port):
             self._json(503, {"error": {"type": "router", "message": "no model loaded yet: send a request with a model name"}})
             return
-        self._proxy(port, qwen_key() if _active == "qwen" else None, b"")
+        self._proxy(port, qwen_key(), b"")
 
     def do_POST(self):
         global _switching
@@ -403,9 +412,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self._body()
         if path in ("/v1/load", "/load"):
             try:
-                name = json.loads(body.decode("utf-8", "replace") or "{}").get("model", "")
+                req = json.loads(body.decode("utf-8", "replace") or "{}")
             except Exception:
-                name = ""
+                req = {}
+            name = req.get("model", "")
+            restart = bool(req.get("restart"))
             if not name:
                 self._json(400, {"error": {"type": "router", "message": "no model name"}})
                 return
@@ -414,8 +425,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._json(409, {"error": {"type": "router", "message": "a switch is already running"}})
                     return
                 _switching = {"phase": "switching", "from": current_id() or _active, "to": name}
-            log("web load -> %s" % name)
-            threading.Thread(target=do_load, args=(name,), daemon=True).start()
+            log("web load -> %s%s" % (name, " (restart)" if restart else ""))
+            threading.Thread(target=do_load, args=(name, restart), daemon=True).start()
             self._json(202, {"ok": True, "model": name})
             return
         self._route(body)
@@ -430,5 +441,6 @@ class ThreadingServer(http.server.ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
-    log("router starting on %d (qwen %d, deepseek %d)" % (PORT, QWEN_PORT, DS_PORT))
+    _active = detect_active()
+    log("router starting on %d (qwen %d; active %s)" % (PORT, QWEN_PORT, _active))
     ThreadingServer(("0.0.0.0", PORT), Handler).serve_forever()
