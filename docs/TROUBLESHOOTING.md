@@ -291,6 +291,15 @@ products are wrong (relative error 0.5 to 1.0 in the tests) with 13.2 and right 
 with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nvcc build 13.2.86, fixes it; an older one can sit next to a newer: `STRATA_NVCC=<path to its nvcc>`);
 setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
 
+**The code a tool ran is missing its `[` and `]` characters, or the client says "tool call delta is missing id or name" (agent apps, long chats).**
+In very long agent conversations (seen from about 40K tokens on Qwen3.8-Flash packs, RTX 3060, October 2026) the model
+sometimes writes the tool call's markup as plain text and drops the bracket characters: `out[i]` reaches the tool as
+`outi`, and the arguments stop being valid JSON. The engine itself is not cutting them: a forced tool call asked to
+copy five bracket pairs back came back exact in 8 of 8 runs (streamed and not, temperature 0). Keep agent sessions
+shorter than about 32K tokens (start a new chat or summarize), prefer writing code to a file over long inline commands,
+and lower the sampling default if you set none (`"sampling": {"temperature": 0.3}` in `strata-<model>.json`). The same
+signature appears on hosted endpoints of the same model family, so this is model-side, not one app's bug.
+
 ## AMD cards
 
 **"No AMD GPU found (the amdgpu driver's KFD topology is empty)" on Linux.**
