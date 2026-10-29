@@ -107,12 +107,12 @@ function saveApiKey(notify = false) {
 $("api-key").oninput = () => saveApiKey();
 $("api-key").onchange = () => saveApiKey(true);
 
-let health = {model: "strata", images: false, max_context: 0};
+let health = {model: "", images: false, max_context: 0};
 // the texts that depend on what this server offers: the empty chat's line and the attach button's hint
 function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
                                         : tr("composer.attach", "Attach a text file (or drop it here)");
-  $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
+  $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model || "Strata"});
 }
 async function loadHealth() {
   try {
@@ -1296,8 +1296,9 @@ async function generateReply() {
   setBusy(true);
   paintLive();
 
-  const body = {model: health.model, messages: apiMessages(), stream: true,
-                reasoning_effort: settings.thinking};
+  const model = modelNow || health.model;              // never send the placeholder: an unknown model must not pick another engine
+  const body = {messages: apiMessages(), stream: true, reasoning_effort: settings.thinking};
+  if (model) body.model = model;
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
   } else if (!samplingUntouched(settings)) {
