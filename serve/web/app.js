@@ -349,7 +349,7 @@ $("unload-btn").onclick = async () => {
 // ------------------------------------------------------------------ model picker (fork)
 // One model at a time: /metrics lists what the router serves; POST v1/load asks it to switch.
 let modelNow = null, modelsSig = "", switchErrAt = null;
-const MODEL_LABELS = {"qwen38-q2_0-refusal": "Qwen 3.8 · Q2_0", "deepseek-v4.1-flash": "DeepSeek V4.1"};
+const MODEL_LABELS = {"qwen38-q2_0-refusal": "Qwen 3.8 · Q2_0"};
 function modelLabel(name) { return MODEL_LABELS[name] || String(name || "").replace(/[-_]/g, " "); }
 function renderModels(ms) {
   const list = (ms && ms.available) || [], sel = $("model-select"), sw = ms && ms.switching;
