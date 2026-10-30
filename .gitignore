@@ -103,3 +103,9 @@ node_modules/
 # local benchmark files that embed the API key (never commit)
 /.orca/ab-bench-v026.ps1
 /.orca/strata-ab-*.json
+
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/
