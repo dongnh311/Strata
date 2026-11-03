@@ -251,11 +251,17 @@ SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth")
 _SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$", re.IGNORECASE)
 
 
+#: The fork (windows-coding) names its Qwen3.8-Flash-Next runs `qwen38-<quant>-...` / `qwen3.8-...` instead of
+#: setup's `qwen3.8-flash-next-<quant>` - same model, same arch; DFlash2 applies to them too.
+_FORK_QWEN38_NAME = re.compile(r"^qwen3\.?8-", re.IGNORECASE)
+
+
 def supported_model(model_name: str | None = None, family: str | None = None) -> bool:
     """DFlash2 is for Qwen3.8-Flash-Next only: by family when it is known (the Terminal), else by the run config's model name."""
     if family is not None:
         return family.lower() in SUPPORTED_FAMILIES
-    return bool(model_name and _SUPPORTED_NAME.match(str(model_name)))
+    name = str(model_name or "")
+    return bool(_SUPPORTED_NAME.match(name) or _FORK_QWEN38_NAME.match(name))
 
 
 def _here(path: Path) -> bool:
