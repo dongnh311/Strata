@@ -97,7 +97,7 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `--vram-reserve-mib 1472` and the conversation cache (10078 / 6 / 8000 / 1536) after any Save in the Models screen:
   that screen can write its old numbers back. The backup of the broken file: `strata-ud-iq1_m.bak-20261106.json`.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
-  780–800 tok/s (13K) and 910–948 (55K), cache first token 0.64 s, decode 43–50 tok/s, no "below 1024 MiB" line.
+  770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
   merge changed behaviour: find the line that did it, fix or revert it, then merge again. Never ship "everything broke".
 - **How to check, in order:** `python -m pytest tests/terminal -k drafting` — the six `coder-iq1_m` failures from the

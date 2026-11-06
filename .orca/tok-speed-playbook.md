@@ -335,6 +335,8 @@ A/B với `0` (mặc định 3 task/thread), cùng số worker.
 | `--spec 6` | 400 token: 7,2 s (lần 1) nhưng 8,0 s (lần 2) vs 7,6 s | nhiễu, không kết luận → giữ `--spec 4` |
 | `STRATA_HC_REQ8=1` (6/11, UD-IQ1_M) | +390 slots (2220→2610) nhưng decode 40,9–44,4 vs 44,9–47,4 | không thắng, lại đổi rounding đáp án → bỏ |
 | `--pool-tasks 192` (6/11, UD-IQ1_M) | decode 43–49,7 vs 43–46 baseline | nhiễu, không đổi → bỏ |
+| `--prefill-head-alias` + `--short-read 0` (6/11, UD-IQ1_M) | slots 2220→2584 (+364) nhưng decode 35,9–38,8; mỗi request ngắn +200 ms (head reload) + mất short-read | **tệ hơn thực tế** → bỏ (flag thiết kế cho card 8 GB reads >512 token) |
+| `STRATA_Q2_BITPLANE=1` (6/11, UD-IQ1_M) | kernel bit-exact cho down Q2_0 (46/48 layer); decode 40,8–47,6, không giảm | giữ — bitwise parity đã test CI, risk 0 |
 | **`--draft dflash2` + `--spec 6`** (6/11, UD-IQ1_M, auto) | decode 29,1–57,9 tok/s, drafts accepted 41/56–97/122 (46–85%), VRAM trống 158–374 MiB → cảnh báo paging; baseline MTP cùng máy: 92–99,6 tok/s, accepted 94–95% | **MTP vẫn thắng trên 12 GB** — `sm_86` ở trong bảng `_SLOWER` của drafting.py; engine cũng tự nói "the MTP drafter was faster" |
 
 ---
@@ -419,8 +421,14 @@ Xem đầy đủ: `strata.exe --help` (146 flag) và `python serve/server.py --h
   Sau sửa, UD-IQ1_M còn kém Q2_0 ~10–15% decode — đó là **đặc tính pack**: Unsloth giữ attention/dense ở bit cao hơn
   (projection 2342 MiB VRAM vs 1376, head Q5_K 521 vs 437 MB) → ít VRAM cho expert cache hơn (2220 vs 3176 slots).
   Muốn đúng bằng 100% tốc độ iq2_0 thì chỉ có chạy lại pack Q2_0 (`strata launch --family qwen --model Q2_0` / config cũ còn nguyên).
-- **Đã thử thêm hôm nay, không thắng** (thêm vào mục 8): `STRATA_HC_REQ8=1` (+390 slots nhưng decode không đổi, lại đổi rounding → bỏ);
-  `--pool-tasks 192` (43–49 tok/s, nhiễu → bỏ).
+- **Đã thử thêm hôm nay**: `STRATA_HC_REQ8=1` (+390 slots nhưng decode không đổi, lại đổi rounding → bỏ); `--pool-tasks 192` (nhiễu → bỏ);
+  `--prefill-head-alias` (+364 slots nhưng mỗi request ngắn +200 ms head reload, decode tụt 36–39 → bỏ — flag cho card 8 GB reads >512 token);
+  `STRATA_Q2_BITPLANE=1` (**giữ**: down của UD là Q2_0 ở 46/48 layer, kernel AVX2 bit-exact có parity test CI, không rủi ro chất lượng).
+- **Đường cải thiện còn lại đang tự chạy**: `expert-profile-learned-ud-iq1_m.bin` học routing thật (lưu mỗi 10 phút / khi quit), và
+  server **tự nạp nó ở lần start sau** (`learned_profile_args`; log 16:40: "pre-filled 2220 of 2220 slots from the profile").
+  Hit rate sẽ dần lên như q2_0 đã mất vài ngày học — không phải cờ nào bật ngay được.
+- **Trần của pack trên card 12 GB**: dense giữ bit cao (+966 MiB VRAM) là thứ đổi chất lượng lấy tốc độ; không tool nén/cắt file nào
+  lấy lại được (file 0 byte chết — đã đo header). Muốn đúng bằng Q2_0 chỉ có chạy pack Q2_0.
 - **Cảnh báo / ĐÃ SỬA (6/11)**: màn Models của app (web 18080, qua router 8081) từng ghi đè `"drafting"` + conversation cache + `--vram-reserve-mib`
   (14:27 nó ghi `dflash2` + 300/3072, rồi tự restart engine). Nguyên nhân: web giữ JS mirror riêng của `choice_of` (không biết bảng `_SLOWER`)
   và resolve Auto → DFlash2 ngay trên máy này. Đã sửa: `apps/host/server/native-settings.mjs` + `src/lib/drafting.ts` (`resolveDrafter` nhận thêm
