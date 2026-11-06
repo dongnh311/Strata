@@ -138,7 +138,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     // Control's plan says the all-cards split engine takes an Auto start on this computer (it runs the MTP draft layer); it needs two or more cards, so one card chosen in the roles is not it.
     const splitCards = native?.capabilities?.dflash2Split === true && cardsGpus.length !== 1;
     // The drafter this run loads (one per run): the fit and the plan use its graphics memory (DFlash2 0.89 GB, MTP 1.08 GB).
-    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2, splitCards) : 'mtp';
+    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2, splitCards, native?.capabilities?.dflash2Slower === true) : 'mtp';
     // DFlash2 with the converted pack (the selector as Q4_0 rows) takes 175 MiB less graphics memory: the fit says the true number (Control's `selq4`, strata_control/drafting.py vram_gb).
     const fitDrafter = nowDrafter === 'dflash2' && native?.capabilities?.dflash2Selq4 === true ? 'dflash2_selq4' : nowDrafter;
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };

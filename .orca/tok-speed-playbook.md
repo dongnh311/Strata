@@ -333,6 +333,9 @@ A/B với `0` (mặc định 3 task/thread), cùng số worker.
 | `STRATA_ADAPT_OVERLAP=1` + `LAG=1`, `NOWAIT=0` | decode 68,3/86,3/85,9 vs baseline 72,9/93,4/91,0 | **chậm hơn 5–7%** → tắt |
 | `--lookup-chain 4` | decode 74,9/93,6/90,5 vs baseline 72,9/93,4/91,0 | không đổi |
 | `--spec 6` | 400 token: 7,2 s (lần 1) nhưng 8,0 s (lần 2) vs 7,6 s | nhiễu, không kết luận → giữ `--spec 4` |
+| `STRATA_HC_REQ8=1` (6/11, UD-IQ1_M) | +390 slots (2220→2610) nhưng decode 40,9–44,4 vs 44,9–47,4 | không thắng, lại đổi rounding đáp án → bỏ |
+| `--pool-tasks 192` (6/11, UD-IQ1_M) | decode 43–49,7 vs 43–46 baseline | nhiễu, không đổi → bỏ |
+| **`--draft dflash2` + `--spec 6`** (6/11, UD-IQ1_M, auto) | decode 29,1–57,9 tok/s, drafts accepted 41/56–97/122 (46–85%), VRAM trống 158–374 MiB → cảnh báo paging; baseline MTP cùng máy: 92–99,6 tok/s, accepted 94–95% | **MTP vẫn thắng trên 12 GB** — `sm_86` ở trong bảng `_SLOWER` của drafting.py; engine cũng tự nói "the MTP drafter was faster" |
 
 ---
 
@@ -384,3 +387,46 @@ Xem đầy đủ: `strata.exe --help` (146 flag) và `python serve/server.py --h
 - Dùng **thinking off / low** cho việc đơn giản: `effort_position=end` đã giữ cache.
 - Đừng bật `parallel`/`batch` trên 12 GB.
 - Nếu cần thêm tốc độ: thử mục 7 #1–#3 (mtp-q4, EXPDEC, pool-tasks).
+
+---
+
+## 12. UD-IQ1_M (6/11): chẩn đoán — pack không chậm, config chậm
+
+- **Prefill như cũ**: 944 tok/s (13K: 904–989 với Q2_0) → IQ1_M tự thân không chậm hơn; expert cache hit 68–86% bình thường.
+- Chậm là do **decode tụt 29–58 tok/s** (baseline MTP: 73–99) vì config UD-IQ1_M mới **không mang theo** các cờ đã A/B từ config Q2_0:
+  thiếu `--mtp mtp\rt` (+ `--mtp-q4 all`) → server tự chọn DFlash2 theo `auto`, mà `sm_86` nằm trong bảng `_SLOWER` của
+  `strata_control/drafting.py`; thiếu `--pcie-frac 0.00`, `--vram-reserve-mib 1472` (chỉ để 300/700 → card đầy 158–374 MiB,
+  WDDM paging), conversation cache bị hạ xuống 3072/2 slot (turn 139K lạnh = đọc lại 147 s), thiếu `reasoning_effort low` +
+  `effort_position end` (đổi effort = mất cache 11,5 s, thinking mặc định phình trần 12K token).
+- **Đã sửa**:
+  - `strata-ud-iq1_m.json` = toàn bộ flags đã kiểm chứng ở mục 2 bản q2_0 + `drafting: "mtp"` + `expert_profile_save:
+    expert-profile-learned-ud-iq1_m.bin` (profile học riêng cho pack này). Backup: `strata-ud-iq1_m.bak-20261106.json`.
+  - `strata_control/drafting.py`: `auto` giờ theo đúng bảng `_SLOWER` — card đã đo chậm hơn (sm_86: RTX 3060/2060/A4000…)
+    auto chọn MTP và nói rõ lý do; ai chọn `dflash2` **by name** thì vẫn chạy DFlash2. Test: thêm
+    `test_auto_is_the_mtp_on_a_card_measured_slower_...`; 146 test, chỉ còn 6 fail **có từ trước** trên `merge-0210`
+    (tên `coder-iq1_m` giờ được DFlash2 — chờ chủ branch quyết).
+- **Đã restart + đo cùng bench (`.orca\bench-pack-ab.py`, 6/11)** — UD-IQ1_M đã sửa vs Q2_0 thật trên cùng máy:
+
+| | UD-IQ1_M (sửa xong) | Q2_0 (build-v030, cùng bench) |
+|---|---|---|
+| slots / VRAM trước expert cache | 2220 / 4.86 GiB | 3176 / 5.96 GiB |
+| prefill 13K / 55K | 780–800 / 910–948 tok/s | 816 / 1003 |
+| cache reuse 13K | reused 8462/8497, first 0.64 s | 8462/8497, first 0.55 s |
+| decode | 43–50 tok/s, accepted ~80%, hit 51–66% | 48,6–55,7, accepted ~78%, hit 55–77% |
+| VRAM trống trong request | 1464 MiB — **hết cảnh báo below 1024** | 1472 MiB |
+
+- **Kết luận**: chậm trước đây là config (thiếu MTP → server auto chọn DFlash2 mà bảng `_SLOWER` đã đo chậm trên sm_86).
+  Sau sửa, UD-IQ1_M còn kém Q2_0 ~10–15% decode — đó là **đặc tính pack**: Unsloth giữ attention/dense ở bit cao hơn
+  (projection 2342 MiB VRAM vs 1376, head Q5_K 521 vs 437 MB) → ít VRAM cho expert cache hơn (2220 vs 3176 slots).
+  Muốn đúng bằng 100% tốc độ iq2_0 thì chỉ có chạy lại pack Q2_0 (`strata launch --family qwen --model Q2_0` / config cũ còn nguyên).
+- **Đã thử thêm hôm nay, không thắng** (thêm vào mục 8): `STRATA_HC_REQ8=1` (+390 slots nhưng decode không đổi, lại đổi rounding → bỏ);
+  `--pool-tasks 192` (43–49 tok/s, nhiễu → bỏ).
+- **Cảnh báo / ĐÃ SỬA (6/11)**: màn Models của app (web 18080, qua router 8081) từng ghi đè `"drafting"` + conversation cache + `--vram-reserve-mib`
+  (14:27 nó ghi `dflash2` + 300/3072, rồi tự restart engine). Nguyên nhân: web giữ JS mirror riêng của `choice_of` (không biết bảng `_SLOWER`)
+  và resolve Auto → DFlash2 ngay trên máy này. Đã sửa: `apps/host/server/native-settings.mjs` + `src/lib/drafting.ts` (`resolveDrafter` nhận thêm
+  `dflash2Slower` từ plan của Control — sm_86 Auto là MTP, by-name vẫn tôn trọng), test `drafting.test.mjs`/`split-app`/`ui-r3` xanh.
+  Nếu chạy app bản packaged, cần build/cập nhật app để phần JS có tác dụng; phần Python (`serve/server.py`, `strata_control/`) đã áp dụng ngay.
+- **Lỗi "MCP tools can only be used from Strata's own page…"**: config UD thiếu `trusted_origins` (bản q2_0 cũ có 16 entry). Đã copy
+  `trusted_origins` + `allowed_hosts` y nguyên sang `strata-ud-iq1_m.json`; test: origin `http://127.0.0.1:8081` gọi MCP → OK,
+  origin lạ → 403 đúng luật.
+- Ghi nhớ: 139K token một prompt = 147 s đọc lạnh dù config chuẩn — vẫn phải giữ session < 32K, `/compact` sớm.

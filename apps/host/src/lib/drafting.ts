@@ -6,13 +6,14 @@
  */
 export const DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth'];
 
-/** The drafter a choice means for a family (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`) and the family is one it was made for, else the MTP. */
-export function resolveDrafter(choice: string | null | undefined, family: string | null | undefined, served: boolean | null | undefined, split?: boolean | null): 'dflash2' | 'mtp' | 'off' {
+/** The drafter a choice means for a family (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`) and the family is one it was made for, else the MTP; Auto is the MTP as well on a card whose own measurements put DFlash2 behind the MTP (`slower`: the `_SLOWER` table, the RTX 3060 among them). A DFlash2 the person chose by name stays. */
+export function resolveDrafter(choice: string | null | undefined, family: string | null | undefined, served: boolean | null | undefined, split?: boolean | null, slower?: boolean | null): 'dflash2' | 'mtp' | 'off' {
   const c = String(choice ?? 'auto').toLowerCase();
   if (c === 'off' || c === 'mtp') return c;
   if (!(served === true && DRAFTING_FAMILIES.includes(String(family)))) return 'mtp';
-  // `split`: Control's plan says the all-cards split engine takes this start; it runs the MTP, so Auto is the MTP there (a DFlash2 the person chose stays)
-  return split === true && c !== 'dflash2' ? 'mtp' : 'dflash2';
+  // `split`: Control's plan says the all-cards split engine takes this start; it runs the MTP, so Auto is the MTP there (a DFlash2 the person chose stays).
+  // `slower`: Control's support level (capabilities.dflash2Support) says DFlash2 measured slower on this card: Auto takes the faster drafter (a DFlash2 the person chose stays).
+  return (split === true || slower === true) && c !== 'dflash2' ? 'mtp' : 'dflash2';
 }
 
 /** What was measured on this kind of card (Control's words): tested = faster on some text and slower on others, slower = slower on every prompt. */

@@ -79,6 +79,37 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
+## Our local changes on this PC — keep them through every merge
+
+The 2026-11-06 work on this PC (RTX 3060 12 GB, i7-14700K, engine 0.1.57) changed things upstream does not know about.
+After every merge, re-check all of them before you run anything. If a merge dropped one, restore it first. A merge that
+leaves this PC slower, or lets a screen write an old number back over a tuned config, is a failed merge — not a release.
+
+- **DFlash2 is the slower drafter on this card, in every part.** `strata_control/drafting.py`: `auto` follows the
+  `_SLOWER` table (cuda `sm_86`), so `auto` here is the MTP, and it says so (`MEASURED_SLOWER`). A `dflash2` named by
+  the person still runs. The app mirrors the same answer: `resolveDrafter(…, slower)` in
+  `apps/host/server/native-settings.mjs` and `apps/host/src/lib/drafting.ts`, fed by `capabilities.dflash2Slower`
+  (`native-control.mjs` reads it from Control's plan; `NativeModels.tsx` uses it for the label and the fit). Python and
+  the two JS mirrors must say the same thing after a merge, or the merge is not done.
+- **`strata-ud-iq1_m.json` is tuned** — `drafting: "mtp"`, the flags listed in `.orca/tok-speed-playbook.md` section 12,
+  `expert_profile_save`, and `trusted_origins` + `allowed_hosts`. `trusted_origins` is what lets the web app reach the
+  server from 8081 / 8443 / LAN; without it MCP answers "only from Strata's own page". Re-read `"drafting"`,
+  `--vram-reserve-mib 1472` and the conversation cache (10078 / 6 / 8000 / 1536) after any Save in the Models screen:
+  that screen can write its old numbers back. The backup of the broken file: `strata-ud-iq1_m.bak-20261106.json`.
+- **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
+  780–800 tok/s (13K) and 910–948 (55K), cache first token 0.64 s, decode 43–50 tok/s, no "below 1024 MiB" line.
+  Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
+  merge changed behaviour: find the line that did it, fix or revert it, then merge again. Never ship "everything broke".
+- **How to check, in order:** `python -m pytest tests/terminal -k drafting` — the six `coder-iq1_m` failures from the
+  branch's own DFlash2 work may stay, nothing else; `node --test tests/drafting.test.mjs tests/split-app.test.mjs
+  tests/ui-r3.test.mjs` in `apps/host` — all green; full `npm test` in `apps/host` — the four old failures
+  (chat-shell #4783, model-directory, ui-do file actions, markdown-crlf) may stay, nothing new; then restart the engine,
+  run `.venv\Scripts\python.exe .orca\bench-pack-ab.py strata-ud-iq1_m.json`, and send one chat call with
+  `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` — it must answer; an unknown origin must still get a 403.
+- **The rule for the next custom change:** put every local speed or behaviour change in one place (Python's table or the
+  run config), let the app read it from Control, and write it here. Never a third copy a merge can silently drop — that
+  is exactly how this PC lost its speed on 2026-11-06.
+
 ## Contributing a change or report
 
 The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and

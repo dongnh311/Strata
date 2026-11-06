@@ -111,6 +111,21 @@ class Decisions(unittest.TestCase):
         d = self.decide("mtp")
         self.assertEqual((d.drafter, d.flags, d.note), ("mtp", (), ""))
 
+    def test_auto_is_the_mtp_on_a_card_measured_slower_and_the_named_choice_stays(self):
+        """The _SLOWER card table (cuda sm_86: the RTX 3060 among them) decides Auto, not just the talk. Owner's measurements, RESULTS-DRAFT.md."""
+        slower = dict(model_name=GYRO, data_dir=self.data, backend="cuda", archs=["sm_86"])
+        self.assertFalse(drafting.needs_pack("auto", **slower), "Auto on a slower card never fetches the DFlash2 file")
+        self.assertTrue(drafting.needs_pack("dflash2", **slower), "named, it is the person's own word: the file is fetched")
+        self.ready()
+        d = drafting.decide("auto", **slower)
+        self.assertEqual((d.drafter, d.flags, d.note), ("mtp", (), drafting.MEASURED_SLOWER), "Auto takes the faster drafter on this card, and says it")
+        self.assertEqual(drafting.line(d.drafter, d.note), "Drafting: MTP (DFlash2 measured slower than the MTP on this card)")
+        d = drafting.decide("dflash2", **slower)
+        self.assertEqual((d.drafter, d.note), ("dflash2", ""), "DFlash2 named by the person stays, even on a slower card")
+        self.assertTrue(drafting.needs_mtp("auto", model_name=GYRO, backend="cuda", archs=["sm_86"], mtp_here=False), "Auto on a slower card fetches the MTP layer once")
+        d = drafting.decide("auto", mtp_here=False, **slower)
+        self.assertEqual((d.drafter, d.note), ("dflash2", drafting.NO_MTP), "no MTP layer on disk yet: the pack that is here still drafts, said")
+
     def test_off_is_off(self):
         self.assertEqual(self.decide("off").drafter, "off")
 

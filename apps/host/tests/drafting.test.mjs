@@ -42,7 +42,7 @@ test('the Models screen offers the choice next to context, DFlash2 only for Qwen
   assert.match(screen, /\.\.\.\(draftingChoices \? \{ values: \{ drafting \} \} : \{\}\)/);
   assert.match(screen, /Choosing MTP downloads its drafter: about \{0\} GB, once\./);
   assert.match(screen, /Choosing DFlash2 downloads its drafter: about \{0\} GB, once\./);
-  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, splitCards\)/, 'the fit uses the drafter that is chosen, and the split word counts only with two or more cards');
+  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, splitCards, native\?\.capabilities\?\.dflash2Slower === true\)/, 'the fit uses the drafter that is chosen, and the split word counts only with two or more cards');
   assert.match(screen, /loadedSelected\?\.metrics\?\.engine\?\.drafting_note/, 'what the engine said is shown');
 });
 
@@ -127,7 +127,7 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
   // the app learns it from Control, once, and false until Control answers
   const host = read('../server/native-control.mjs');
-  assert.match(host, /dflash2:dflash2Served===true,dflash2Support,dflash2Selq4,dflash2Split\}/);
+  assert.match(host, /dflash2:dflash2Served===true,dflash2Slower,dflash2Support,dflash2Selq4,dflash2Split\}/);
   assert.match(host, /dflash2Served=p\.serves===true/);
   assert.match(host, /function probeDrafting\(\)\{if\(!packaged\|\|dflash2Served!==null/);
   const screen = read('../src/components/NativeModels.tsx');
@@ -180,7 +180,7 @@ test('one drafter per run: Auto is DFlash2 where the engine has it, the same wor
 test('a new install fetches only the drafter it will use; the fit and the slot estimates use the drafter chosen', async () => {
   const source = read('../server/native-control.mjs');
   assert.match(source, /'gguf_dir','drafter'\]/);
-  assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served,dflash2Split\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
+  assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served,dflash2Split,dflash2Support\?\.level==='slower'\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
   const { chooseParallel, MTP_VRAM_GB, DFLASH2_VRAM_GB } = await import('../server/native-parallel.mjs');
   assert.deepEqual([MTP_VRAM_GB, DFLASH2_VRAM_GB], [1.08, 0.89]);
   const config = { args: ['--mtp', '/m', '--max-context', '32768'], model_name: 'qwen3.8-flash-next-iq3_s' };
@@ -252,6 +252,22 @@ test('where the all-cards split engine takes the start, Auto is the MTP in the l
   assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
     'a plain Auto load fetches the draft layer when the plan says split; a saved explicit choice is left alone');
   assert.match(read('../src/lib/native.ts'), /dflash2Split\?:boolean/);
+});
+
+test('Auto is the MTP on a card whose own measurements put DFlash2 behind the MTP (strata_control/drafting.py _SLOWER: cuda sm_86, the RTX 3060 among them); a DFlash2 chosen by name stays', async () => {
+  const { transform } = await import('esbuild');
+  const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
+  const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+  const host = await import('../server/native-settings.mjs');
+  for (const [choice, want] of [['auto', 'mtp'], [undefined, 'mtp'], ['dflash2', 'dflash2'], ['mtp', 'mtp'], ['off', 'off']]) {
+    assert.equal(ts.resolveDrafter(choice, 'unsloth', true, false, true), want, `ts ${choice}`);
+    assert.equal(host.resolveDrafter(choice, 'unsloth', true, false, true), want, `host ${choice}`);
+  }
+  assert.equal(host.resolveDrafter('auto', 'qwen3.8-flash-next-unsloth-ud-iq1_m', true, false, true), 'mtp', 'a run config model name works too');
+  assert.equal(ts.resolveDrafter('auto', 'unsloth', true, false, false), 'dflash2', 'a card that did not measure slower: Auto stays DFlash2');
+  assert.equal(ts.resolveDrafter('auto', 'qwen', false, false, true), 'mtp', 'without the code there is nothing to take anyway');
+  const page = read('../src/components/NativeModels.tsx');
+  assert.match(page, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, splitCards, native\?\.capabilities\?\.dflash2Slower === true\)/, 'the label and the fit read the card word');
 });
 
 test('the MTP fetch the app makes names the folder of the model own files, so the installer never downloads the model again', () => {

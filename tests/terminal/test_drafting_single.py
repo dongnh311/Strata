@@ -64,11 +64,16 @@ class Base(unittest.TestCase):
 class EveryChoiceOnEveryBackend(Base):
     def test_auto_dflash2_and_the_unset_choice_load_dflash2_alone(self):
         for backend, archs in HARDWARE:
+            slower = drafting.hardware_support(backend, archs).level == "slower"
             for family in ("qwen", "gyro", "unsloth"):
                 for mode in (None, "auto", "dflash2"):
                     cfg = self.cfg(family, **({} if mode is None else {"drafting": mode}))
                     d, args = self.apply(cfg, family, backend, archs)
                     where = (backend, archs, family, mode)
+                    if slower and mode in (None, "auto"):   # the card's own measurements (_SLOWER): Auto takes the MTP, a DFlash2 named by the person stays
+                        self.assertEqual((d.drafter, loaded(args), d.note), ("mtp", {"mtp"}, drafting.MEASURED_SLOWER), where)
+                        self.assertFalse([a for a in args if a.startswith("--draft")], where)
+                        continue
                     self.assertEqual(d.drafter, "dflash2", where)
                     self.assertEqual(loaded(args), {"dflash2"}, where)
                     self.assertEqual(flag(args, "--draft-fallback"), "none", where)
@@ -133,12 +138,19 @@ class EveryChoiceOnEveryBackend(Base):
         self.assertFalse(drafting.blocked_by([], slots=4, named=True, backend="cuda"))
 
     def test_a_layer_split_runs_dflash2_alone_like_one_card(self):
-        """Owner 2026-11-02: Auto is DFlash2 on a layer split over several cards too (the 0.1.56 engine runs it; paired decode 1.014 against the MTP)."""
+        """Owner 2026-11-02: Auto is DFlash2 on a layer split over several cards too (the 0.1.56 engine runs it; paired decode 1.014 against the MTP).
+        A card whose own measurements put DFlash2 behind the MTP (_SLOWER: cuda sm_86) keeps the MTP on a split too, exactly as on one card."""
         for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"]), ("hip", ["gfx1100"])):
+            slower = drafting.hardware_support(backend, archs).level == "slower"
             for mode in (None, "auto", "dflash2"):
                 cfg = self.cfg(**({} if mode is None else {"drafting": mode}))
                 one, args_one = self.apply(dict(cfg, args=list(cfg["args"])), "qwen", backend, archs)
                 two, args_two = self.apply(dict(cfg, args=list(cfg["args"])), "qwen", backend, archs, split=True)
+                if slower and mode in (None, "auto"):
+                    self.assertEqual((two.drafter, loaded(args_two)), ("mtp", {"mtp"}), (backend, mode))
+                    self.assertEqual(args_two, args_one, "the same arguments as one card")
+                    self.assertFalse([a for a in args_two if a.startswith("--draft")], (backend, mode))
+                    continue
                 self.assertEqual((two.drafter, two.note, loaded(args_two)), ("dflash2", "", {"dflash2"}), (backend, mode))
                 self.assertEqual(args_two, args_one, "the same arguments as one card")
                 self.assertNotIn("--mtp", args_two)
@@ -209,7 +221,10 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
 
     def test_each_choice_through_the_server(self):
         for backend, archs in HARDWARE:
+            slower = drafting.hardware_support(backend, archs).level == "slower"
             for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
+                if mode in (None, "auto") and slower:
+                    want = {"mtp"}                       # Auto takes the faster drafter on a card that measured DFlash2 slower (_SLOWER); a named DFlash2 stays
                 args = self.server_args(self.cfg(**({} if mode is None else {"drafting": mode})), backend, archs)
                 self.assertEqual(loaded(args), want, (backend, archs, mode))
                 if want == {"dflash2"}:
@@ -219,7 +234,10 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
 
     def test_a_layer_split_through_the_server(self):
         for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"])):
+            slower = drafting.hardware_support(backend, archs).level == "slower"
             for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
+                if mode in (None, "auto") and slower:
+                    want = {"mtp"}                       # the same as one card: a _SLOWER card keeps the MTP
                 cfg = self.cfg(gpu=[0, 1], **({} if mode is None else {"drafting": mode}))
                 args = self.server_args(cfg, backend, archs)
                 where = (backend, archs, mode)

@@ -13,7 +13,8 @@ strata_control/draft_layer.py), so a setup run that rewrites the engine argument
            (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the person set by hand (``user_args``) stays
   mtp      the model's own draft layer (``--mtp <folder>``) and none of the DFlash2 flags
   off      no draft layer and no DFlash2 (the same as ``"mtp": false``: the engine still looks ahead in the text with ``--spec``)
-  auto     DFlash2 wherever the engine has it (DFLASH2_BACKENDS) and the model is Qwen3.8-Flash-Next, Gyro or an Unsloth quantization, the MTP everywhere else
+  auto     DFlash2 wherever the engine has it (DFLASH2_BACKENDS) and the model is Qwen3.8-Flash-Next, Gyro or an Unsloth quantization, the MTP everywhere else,
+           and the MTP on a card whose own measurements put DFlash2 behind it (_SLOWER: sm_86, the RTX 3060 among them)
 
 Recommend, never force: a choice that cannot be applied (DFlash2 with several requests at once, no drafter file yet) does not stop the
 start. The other drafter runs if it is on this computer, else none, and ``Decision.note`` says why in one short line. Nothing is loaded twice and the
@@ -426,6 +427,7 @@ NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
 NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
+MEASURED_SLOWER = "DFlash2 measured slower than the MTP on this card"   # Auto takes the MTP on a _SLOWER card, said in one line; DFlash2 named by the person still runs
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
 SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
@@ -667,21 +669,26 @@ def can_run_dflash2(model_name: str | None, family: str | None, backend: str | N
 
 def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
-    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else; DFlash2 asked for by name where it cannot run is MTP."""
+    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else, and the MTP on a card whose own measurements put DFlash2
+    behind it (_SLOWER); DFlash2 asked for by name where it cannot run is MTP, and a named DFlash2 on a slower card stays the person's own word."""
     asked = normalize(mode)
     if asked == "off":
         return "off"
     if asked == "mtp":
         return "mtp"
-    return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
+    if not can_run_dflash2(model_name, family, backend, archs):
+        return "mtp"
+    if asked == "auto" and hardware_support(backend, archs).level == "slower":
+        return "mtp"
+    return "dflash2"
 
 
 def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
            backend: str | None = None, archs: Any = None, mtp_here: bool | None = None, blocked: bool = False, vocab_here: bool = True) -> Decision:
     """The drafter a start uses. Never raises. One drafter, never two. A choice that cannot be applied becomes the other drafter when that one is on this computer,
     else none, with a note in plain words. ``mtp_here`` says whether the MTP layer is on disk (None: not known, taken as there), ``blocked`` that this start is a layer
-    split or has several requests at once (see blocked_by), ``vocab_here`` that the draft vocabulary DFlash2 needs is there. ``klass`` is not used any more (Auto
-    does not depend on the kind of card) and stays only so the callers keep working."""
+    split or has several requests at once (see blocked_by), ``vocab_here`` that the draft vocabulary DFlash2 needs is there. ``klass`` is not used any more and
+    stays only so the callers keep working."""
     asked = normalize(mode)
     if asked == "off":
         return Decision(asked, "off")
@@ -699,6 +706,8 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
         why = ""
         if asked == "dflash2":                      # named, and it cannot run on this model or this computer
             why = NOT_SUPPORTED if not supported_model(model_name, family) else NOT_SERVED if not ENGINE_SERVES_DFLASH2 else NOT_THIS_CARD
+        elif asked == "auto" and not blocked and hardware_support(backend, archs).level == "slower":
+            why = MEASURED_SLOWER                   # Auto took the MTP on a _SLOWER card: said, like every Auto change, nothing moves silently
         return Decision(asked, "mtp", why)
     # the layer is not on this computer: DFlash2 instead when it can run and its pack is here (said), else none (said)
     if runnable and not blocked and vocab_here and pack_ready(data_dir):
