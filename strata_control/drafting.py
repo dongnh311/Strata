@@ -186,9 +186,9 @@ def hardware_support(backend: str | None, archs: Any = None, model_name: str | N
             return Support(True, "tested", LINE_METAL)
     if (make, arch) in _TESTED:
         return Support(True, "tested", LINE_TESTED)
-    if (make, arch) in _SLOWER and any(k[0] == make and k[1] == set_of(model_name) and v.drafter == "dflash2" for k, v in CLASS_DEFAULTS.items()):
-        return Support(True, "tested", LINE_TESTED)               # a set whose default on this class of card is DFlash2 (CLASS_DEFAULTS): faster on some kinds of text, slower on others
     if (make, arch) in _SLOWER:
+        # A card kind whose own measurements put DFlash2 behind the MTP stays "slower" for every set (owner 2026-11-06, RTX 3060 12 GB: slower on every prompt).
+        # A CLASS_DEFAULTS entry for such a card only picks the pack and the conf when the person names DFlash2; it does not change the card's word.
         return Support(True, "slower", LINE_SLOWER)
     return Support(True, "untested", LINE_UNTESTED)
 

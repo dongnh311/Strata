@@ -172,11 +172,11 @@ class V31OnTheClass(Base):
         self.assertFalse(drafting.tuned_applies("cuda", V31, ["sm_89"], args=self.args, vram_mib=16384), "the 0.7 step is neither class")
         self.assertFalse(drafting.tuned_applies("cuda", V31, ["sm_120", "sm_120"], args=self.args, vram_mib=None), "several cards")
 
-    def test_the_support_line_for_sm_86_reads_the_set(self):
+    def test_the_support_line_for_sm_86_reads_the_card(self):
         h = drafting.hardware_support
         self.assertEqual(h("cuda", ["sm_86"], IQ3S).line, drafting.LINE_SLOWER, "IQ3_S on sm_86 keeps the line it had")
         self.assertEqual(h("cuda", ["sm_86"]).line, drafting.LINE_SLOWER)
-        self.assertEqual(h("cuda", ["sm_86"], V31).line, drafting.LINE_TESTED, "v31 is DFlash2 by default there: faster on some text, slower on other")
+        self.assertEqual(h("cuda", ["sm_86"], V31).line, drafting.LINE_SLOWER, "the card's own measurements come first (owner 2026-11-06); the class entry only picks the pack when DFlash2 is named")
         self.assertEqual(h("cuda", ["sm_120"], V31).line, drafting.LINE_TESTED)
 
 
