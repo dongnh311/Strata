@@ -265,6 +265,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-code .st-btn--icon[data-preview-scripts][aria-pressed="true"] { background: var(--st-warn-tint); color: var(--st-warn-text); }
 .st-code--run .st-code__preview { outline: 2px solid var(--st-warn-text); outline-offset: -2px; }
 .st-code__preview iframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; }
+.st-code__hint { display: none; align-items: center; justify-content: space-between; gap: var(--st-s-3); padding: 8px 10px;
+                 border-top: 1px solid var(--st-line); background: var(--st-warn-tint); color: var(--st-warn-text);
+                 font-size: var(--st-fs-xs); }
+.st-code[data-preview="true"] .st-code__hint { display: flex; }
+.st-code--run .st-code__hint { display: none; }
 
 /* ---------------------------------------------------------------- chat history (chats-ui.js)
    The saved-chats list (PR #1787 by Scotty-Hudson), edit / regenerate / rewind (PR #2615 by uppet) and the Chat settings button. */
