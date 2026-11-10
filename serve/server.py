@@ -7744,6 +7744,19 @@ def structured_chunks(chunks, validator):
 
 
 # ------------------------------------------------------------------------------------------------ Anthropic
+def mcp_note(x: dict) -> str:
+    """run_with_mcp's tool activity as a line of thinking text: the Anthropic API has no field for a tool the server
+    ran itself, and a client like Claude Code shows thinking, so the user sees what was searched."""
+    if x.get("event") == "call":
+        args = json.dumps(x.get("arguments") or {}, ensure_ascii=False)
+        return f"\n[{x['name']} {args[:300]}{'...' if len(args) > 300 else ''}]\n"
+    if x.get("event") == "result" and not x.get("skipped"):
+        return f"[{'ok' if x['ok'] else 'failed'}: {x['chars']:,} characters in {x['ms'] / 1000:.1f} s]\n"
+    if x.get("event") == "limit":
+        return f"[tool limit reached: {x['max_rounds']} rounds]\n"
+    return ""
+
+
 def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, force=None, deferred=False):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become thinking
     text (mcp_note), and the tools it ran never appear as tool_use blocks - the client only answers its own.
