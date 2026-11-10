@@ -10752,6 +10752,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     tpath = Path(a.tokenizer)
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
+    tcfg = {}
+    try:                                                # the pack's pre-tokenizer name and special ids (DeepSeek's differ)
+        tcfg = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    tok = None
     if (tpath / "vocab.json").exists():
         import strata_tokenizer as ST
         vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
@@ -10760,14 +10766,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        try:                                            # the pack's pre-tokenizer name and special ids (DeepSeek's differ)
-            tcfg = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            pass
         try:
             tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
         except ST.UnknownPreTokenizer as e:             # a model with its own splitting rule: stop here, never split with another's
             ap.error(f"the model's tokenizer ({tpath}): {e}")
+    if tok is None:                                    # mock / a pack without vocab.json: the old fallback, not an unbound name
+        tok = load_tokenizer(tpath) or ByteTokenizer()
     if a.engine == "strata" and not cfg.get("arch") and arch_from_tokenizer(None, tcfg.get("pre")):
         cfg["arch"] = arch_from_tokenizer(None, tcfg.get("pre"))
         print(f"[strata] the config names no \"arch\" and this tokenizer is DeepSeek's: serving it as {cfg['arch']} (its end token, DSML tool "
