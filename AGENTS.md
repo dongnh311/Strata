@@ -130,6 +130,65 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   run config), let the app read it from Control, and write it here. Never a third copy a merge can silently drop — that
   is exactly how this PC lost its speed on 2026-11-06.
 
+## Merge checklist — follow every upstream merge, in order
+
+A merge is done only when every box is checked. Skip nothing because "it probably still works".
+
+### Before merging
+
+- [ ] `git status` clean or committed; create a backup ref: `git branch backup-pre-<ver>` (and tag it).
+- [ ] Write down the current version line (top of this file) and the engine binary version
+      (`engine/strata.exe --version` or the serve log's `engine started` line). Merges do NOT rebuild the engine —
+      the prebuilt binary stays whatever it was; note if upstream shipped a new engine package.
+- [ ] `git fetch upstream --tags`; read `git log HEAD..upstream/main` and the release notes for anything touching
+      `strata_control/drafting.py`, `serve/`, `strata-ud-iq1_m.json` consumers, the expert cache, or the flags in
+      `.orca/tok-speed-playbook.md` section 12.
+
+### During the merge
+
+- [ ] Merge `upstream/main` (or the release tag) into `windows-coding`; resolve conflicts keeping the local
+      behaviour above — when upstream and local disagree on speed/behaviour, the local tuned behaviour wins unless
+      the upstream change is measured faster here.
+- [ ] Confirm every item in the local-changes list above still exists in the merged tree (grep for `_SLOWER`,
+      `dflash2Slower`, `STRATA_PCIE_BALANCE`, `trusted_origins`, `expert_profile_save`, `strip_cjk`).
+
+### After merging — gates, in this order
+
+- [ ] `python -m pytest tests/terminal -k drafting` — only the six known `coder-iq1_m` failures may remain.
+- [ ] `cd apps/host && node --test tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` — all green.
+- [ ] `cd apps/host && npm test` — only the four known old failures (chat-shell #4783, model-directory,
+      ui-do file actions, markdown-crlf); nothing new.
+- [ ] Re-read the tuned run configs — a merge or a Models-screen Save can write old numbers back:
+      `strata-ud-iq1_m.json` keeps `drafting:"mtp"`, `--vram-reserve-mib 1472`, conversation cache
+      10078/6/8000/1536, `expert_profile_save`, `trusted_origins`, `allowed_hosts`, and `env`
+      `STRATA_EXPDEC=1 STRATA_PLE_AUTO_MMAP=1 STRATA_HC_UPMIX=1 STRATA_Q2_BITPLANE=1 STRATA_PCIE_BALANCE=1`;
+      `strata-q2_0-v144-refusal.json` unchanged apart from upstream-needed fields.
+- [ ] Kill ALL `strata.exe` / `strata-vision.exe` / `serve/server.py` first (duplicates once cut the expert cache
+      to 1083 slots and decode to ~15 tok/s — that was NOT a merge regression). `nvidia-smi` must show ~12 GB free
+      before starting exactly one server.
+- [ ] Start the production config on 18080, wait for `/v1/models`, then check `/metrics`: correct model id,
+      `drafting=mtp`, `spec=12`, expert slots at the full count for that pack (UD-IQ1_M ~2210, Q2_0 ~3176),
+      `vram_free_mib` ~1464–1472, no "below 1024 MiB" line in the log.
+- [ ] `.venv\Scripts\python.exe .orca\bench-pack-ab.py <prod-config>` — compare against the floor numbers above
+      (and the Q2_0 row). A number that went down means the merge changed behaviour: find the line, fix or
+      revert it, re-merge. Never ship "everything broke".
+- [ ] One chat call through the router with `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` — must
+      answer; an unknown origin must still get 403.
+- [ ] Router on 8081 and `https://pc-dik-win.tail1b3f7b.ts.net:8443/` both answer 200; `/v1/models` shows the
+      production model id.
+- [ ] If `model-router.py` changed upstream-side, re-sync the deployed copy at
+      `%LOCALAPPDATA%\strata-stack\model-router.py` with `.orca/local-stack/model-router.py` and restart the router
+      (`run-router.bat`). Its `QWEN_CFG`/`QWEN_ID` must name the production config.
+- [ ] Update the version line at the top of this file and any moved floor numbers; commit the merge and push
+      `windows-coding`.
+
+### Things that are NOT the merge's fault (check before blaming it)
+
+- Duplicate engines on the GPU (expert slots ~1083, decode ~15–20 tok/s) — kill extras, restart once.
+- `--mmap-experts` or too little free RAM (~33 GiB needed) — expert arena won't fit, file-tier reads, decode ~20.
+- The Models screen in the app overwriting the tuned config on Save.
+- Q2mix/UD-IQ1_M tool-call stops are a model property, not a regression — Q2_0 is the agentic choice.
+
 ## Contributing a change or report
 
 The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
