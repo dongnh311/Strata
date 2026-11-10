@@ -1021,6 +1021,21 @@ function onTool(m, x) {
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
+// #3796: a call the server refused (a name the request did not offer) comes back as the model's own text with a
+// marker in the final chunk.  It used to vanish from the page: no card, and an answer that looked like the tool had
+// been ignored.  It is an error card now, with the reason the model was told.
+function onRejected(m, list) {
+  if (!Array.isArray(list) || !list.length) return;
+  m.tools = m.tools || [];
+  for (const r of list) {
+    const name = (r && r.name) || "tool";
+    if (m.tools.some((t) => t.refused && t.name === name)) continue;      // one card per name, not one per attempt
+    m.tools.push({id: null, name, at: m.text.length, rat: m.reasoning.length, state: "error", refused: true,
+                  ok: false, chars: 0, arguments: null,
+                  result: tr("tool.rejected", "The server refused this call: \"{name}\" is not one of the tools " +
+                    "offered here, so it was not run. Call one of the offered tools, or answer without it.", {name})});
+  }
+}
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
@@ -1350,6 +1365,7 @@ async function generateReply() {
           // an interjection waited for a running tool: it has its result now, so the answer can stop
           if (busy.cutAfterTool && !busy.cut && !(m.tools || []).some((t) => t.state === "running")) { busy.cut = true; controller.abort(); }
         }
+        if (j.strata_rejected_tool_calls) onRejected(m, j.strata_rejected_tool_calls);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
@@ -1384,7 +1400,7 @@ async function generateReply() {
     m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
-  const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
+  const ran = (m.tools || []).filter((t) => (t.state === "done" || t.state === "error") && !t.refused).length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.toolCalls", {one: "{n} tool call", other: "{n} tool calls"}, {n: ran})}`;
   if (m.limit) m.meta = `${m.meta || ""} · ${tr("chat.toolLimit", "stopped at the limit of {n} tool rounds (mcp.max_rounds)", {n: m.limit})}`;
   busy = null;

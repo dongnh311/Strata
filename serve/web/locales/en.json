@@ -256,6 +256,7 @@
   "tool.cut": ", cut for the model",
   "tool.done": "Done",
   "tool.error": "Error",
+  "tool.rejected": "The server refused this call: \"{name}\" is not one of the tools offered here, so it was not run. Call one of the offered tools, or answer without it.",
   "tool.result": "Result",
   "tool.running": "Running",
   "tool.skipped": "Not run",
