@@ -112,13 +112,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   - Do NOT pass `--mmap-experts`: it opts out of the ~32 GiB resident expert arena and decode collapses
     to ~20 tok/s (needs ~33 GiB free RAM at start or the arena won't fit and it falls back to the file anyway).
   Measured 2026-11-09 (arena mode, engine 0.1.57): prefill 794/945 tok/s, decode 41–48 tok/s median ~46,
-  slots 2258 — same as the first run. HumanEval earlier: 51/60. **Tool-calling is unreliable on the
-  UD-IQ1_M dense family**: in an opencode bug-hunt task both Q2mix and UD-IQ1_M stopped after reasoning
-  without emitting tool calls, while Q2_0 completed it perfectly — use Q2_0 for agentic workloads.
+  slots 2258 — same as the first run. HumanEval earlier: 51/60. **Tool-calling retest 2026-11-12 (post
+  v0.2.13.1 merge): UD-IQ1_M PASSED the same opencode bug-hunt task 2/2 runs** — clean read→test→edit→retest
+  loop, all bugs fixed. The earlier reasoning-then-stop was likely fixed by upstream's v0.2.13 tool-call work
+  (or was sampling luck); re-verify before trusting either verdict.
   All files deleted again after the test; the recipe above is kept for a future retry.
-  **UD-Q2_0 tested 2026-11-12 (post v0.2.13.1 merge, `strata-ud-q2_0-tuned.json`): PASSED the same opencode
-  bug-hunt task** — clean read→test→edit→retest loop, all 3 planted bugs fixed, 4/4 tests green. So the
-  tool-call failure is specific to the **IQ1_M dense** tensors, not the UD family or the Q2_0 experts:
+  **UD-Q2_0 tested same day (`strata-ud-q2_0-tuned.json`): PASSED** — both UD quants now do tool calls;
   UD-Q2_0 (official Unsloth quant, same expert recipe as Q2mix) is a viable agentic alternative to Q2_0.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
