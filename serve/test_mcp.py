@@ -651,6 +651,28 @@ class ToolLoop(unittest.TestCase):
         self.assertIn(TOOL_LIMIT_NOTE, self.engine.prompt_text(2))
         self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
 
+    def test_a_reasoning_only_stop_is_asked_again_without_thinking(self):
+        """Local guard (2026-11-10): a "fix the page" request with the page in the prompt ended after 2K tokens of
+        thinking with no answer and no call, so the webchat showed the thought and then nothing.  One retry with
+        thinking off must answer, with the reasoning kept in the prompt (the 24K prefix is unchanged for the cache)."""
+        self.start("I see the page and the fix.</think" + ">", "Here is the fixed page.")
+        self.svc.effort_end = True                                   # the production config's effort_position "end"
+        code, text = self.post({"strata_mcp": True, "reasoning_effort": "low"})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
+        self.assertIn("Here is the fixed page.", content)
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(len(self.engine.prompts), 2)
+        p0, p1 = self.engine.prompt_text(0), self.engine.prompt_text(1)
+        note = "Your previous reply was thinking only and wrote no answer."
+        self.assertNotIn(note, p0)
+        self.assertIn(note, p1)
+        self.assertIn("I see the page and the fix.", p1)             # the thinking is not thrown away
+        self.assertEqual(p1.count("</think" + ">"), 1)              # thinking off's empty block; no empty turn (#843)
+        base = p0[:p0.index("check it") + len("check it")]          # control tokens are not in prompt_text
+        self.assertTrue(p1.startswith(base))                         # the page's prefix is unchanged
+
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""
         self.start(call_script("fake__sleep", seconds=8), "</think>\n\nnever")

@@ -143,6 +143,14 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   page at `max_tokens` 8192 in 24 s; the car page with `max_tokens` empty — 29,908 chars, `finish` stop, zero tool
   calls, 613 s. 4000 tokens cannot hold the page (thinking plus page): use empty or 16384+. After a merge, grep
   `serve/mcp.py` for `_ANSWER_CONTENT` and `serve/server.py` for `without_content_tools` / `refused_text`.
+- **Empty-answer retry (2026-11-10).** The webchat's tool loop (`serve/server.py` `run_with_mcp`) can end a round
+  after thinking with no answer and no call, so the page showed a thought and then nothing. The server now asks once
+  more with `enable_thinking: False`; the thinking is quoted in a trailing user note (not an empty assistant turn,
+  which the template drops) so the prompt prefix stays cached. Log line `empty_answer_retry`; test
+  `serve/test_mcp.py::test_a_reasoning_only_stop_is_asked_again_without_thinking`. It does not cover a model that
+  calls the gateway's `web_search`/`fetch_url` instead of answering: a pasted car page did that on 2026-11-10 and
+  the tool limit returned the rejected call as text. The fixed page is `serve/web/car-page.html` (also
+  `.orca/car-page.html`).
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised

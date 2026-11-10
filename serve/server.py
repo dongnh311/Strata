@@ -7290,6 +7290,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     finalizing = False
+    empty_retried = False
     messages = list(messages)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
@@ -7315,6 +7316,30 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         total += done["completion_tokens"]
         run_them = calls and not own_calls and not finalizing and done["finish"] == "stop" and not cancel.is_set()
         if not run_them:
+            if (not empty_retried and not cancel.is_set() and "".join(reasoning).strip()
+                    and not "".join(text).strip() and not calls and not own_calls
+                    and done["finish"] == "stop"):
+                # Local guard (this PC, 2026-11-10): a "fix the page" request with the whole page in the prompt ended
+                # after 2K tokens of thinking with no answer and no call, so the webchat showed the thought and then
+                # nothing.  Ask once more with thinking off.  The note is a user message at the end, so the 24K-token
+                # prefix is unchanged and the engine's conversation cache reuses it.  The thinking is quoted inside
+                # the note, not added as an empty assistant turn: the template drops those on purpose (#843), and
+                # showing the model one would teach it to stop the same way again.
+                empty_retried = True
+                print("[strata] the reply was thinking only, with no answer: asking again without thinking "
+                      "(empty_answer_retry)", flush=True)
+                thought = "".join(reasoning).strip()
+                messages.append({"role": "user", "content":
+                    "Your previous reply was thinking only and wrote no answer. That thinking was:\n\n"
+                    + thought + "\n\nAnswer my request above now, in my language, as text in this reply. "
+                    "Do not think it through again and do not emit a tool call."})
+                kw = {**kw, "enable_thinking": False}
+                try:
+                    ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+                except ClientGone:                      # #1999: the client left while the prompt was prepared
+                    done = {**done, "finish": "cancel"}
+                    break
+                continue
             for c in calls:                              # announced, never run: close them in the client's view
                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
                               "chars": 0, "truncated": False, "ms": 0}
