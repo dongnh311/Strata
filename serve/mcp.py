@@ -647,6 +647,7 @@ class McpHub:
                     "for, put that content in your reply instead of shelling it to disk." % len(arguments["command"]))
             ok = False
             out["refused"] = "answer_content"           # run_with_mcp then ends the tool rounds (one inline answer)
+            out["refused_text"] = arguments["command"]  # the page itself: the chat shows it without a second write
         elif tool == "exec" and isinstance(arguments, dict) and \
                 isinstance(arguments.get("command"), str) and self._ANSWER_CONTENT.search(arguments["command"]):
             # The same deliverable under 2000 characters: the shell then mangles the quoting and the model retries
@@ -655,6 +656,7 @@ class McpHub:
                     "would mangle the quoting. Reply with that content inline in the chat instead.")
             ok = False
             out["refused"] = "answer_content"           # run_with_mcp then ends the tool rounds (one inline answer)
+            out["refused_text"] = arguments["command"]  # the page itself: the chat shows it without a second write
             print("[strata] MCP exec refused: the command carries the answer's content (HTML/code)", flush=True)
         else:
             try:

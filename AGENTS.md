@@ -135,8 +135,11 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   command carries HTML/code (`_ANSWER_CONTENT`: `<!doctype html`, `<html`, `<canvas`, `<svg`, `<script`) and sets
   `out["refused"]="answer_content"`; `run_with_mcp` then ends the tool rounds at once (`finalizing=True`,
   `tools=None`, an "answer inline" system message, event `{"event":"inline"}`), so the model cannot retry the
-  shell write. Verified live: one refused call, one inline answer, no second call, the file was never written.
-  After a merge, grep `serve/mcp.py` for `_ANSWER_CONTENT` and `serve/server.py` for `refused`.
+  shell write. The page found in the refused command (`refused_text`) is delivered as the answer directly
+  (`_answer_from_command`), so the model does not write the same 10K tokens again — a second round ran past the
+  webchat's wait. Verified live: one refused call, the page returned as the answer in 22 s, no second call, the
+  file was never written. After a merge, grep `serve/mcp.py` for `_ANSWER_CONTENT` and `serve/server.py` for
+  `refused_text`.
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised

@@ -7252,6 +7252,20 @@ def mcp_aliases(routes, offered, own) -> dict[str, str]:
 TOOL_LIMIT_NOTE = ("[Tool limit reached: do not call any more tools. Write the final answer for the user now, "
                    "using only what the tool results above contain.]")
 
+_HTML_DOC = re.compile(r"<!doctype\s+html[^>]*>.*?</html\s*>|<html[\s>].*?</html\s*>", re.I | re.S)
+
+
+def _answer_from_command(command: str) -> str:
+    """The HTML page an exec command carried (local guard, this PC).  The chat shows it as the answer, so the model
+    does not write the same 10K tokens again in a second round after the call was refused."""
+    found = _HTML_DOC.search(command or "")
+    if not found:
+        return ""
+    page = found.group(0)
+    if '\\"' in page or "\\n" in page:             # the model nested the page in a JS/JSON string
+        page = page.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
+    return page.strip()
+
 
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, aliases=None):
@@ -7297,7 +7311,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                               "chars": 0, "truncated": False, "ms": 0}
             break
         rounds += 1
-        results, tool_images, refused = [], [], None
+        results, tool_images, refused, refused_text = [], [], None, ""
         for c in calls:
             s, tool = hub.routes().get(c.name, (None, c.name))
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
@@ -7325,6 +7339,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 break
             r = box["r"]
             refused = refused or r.get("refused")
+            refused_text = r.get("refused_text") or refused_text
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r.get("model_content", r["text"]) if (svc.vision is not None or svc.native_vision is not None) else r["text"])
@@ -7339,9 +7354,16 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
         if refused:
-            # Local guard (this PC): a call that carried the answer's content was refused, so the tools end here
-            # instead of the model retrying the same shell write (the webchat HTML loop).  One inline answer follows:
-            # the page is in the reply text, which is what the chat shows.
+            # Local guard (this PC): the call carried the answer's content, so the tools end here instead of the
+            # model retrying the shell write.  The page is already in the refused command: show it as the answer
+            # and skip the second 10K-token round, which ran past the webchat's wait.
+            page = _answer_from_command(refused_text)
+            if page:
+                yield "mcp", {"event": "inline", "reason": refused, "delivered": True}
+                yield "event", Event(kind="content", text=page)
+                yield "done", {**(done or {}), "finish": "stop", "completion_tokens": total,
+                               "prompt_tokens": len(ids)}
+                return
             finalizing = True
             tools = None
             system_end = next((index for index, message in enumerate(messages)
