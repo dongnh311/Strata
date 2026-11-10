@@ -116,6 +116,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   UD-IQ1_M dense family**: in an opencode bug-hunt task both Q2mix and UD-IQ1_M stopped after reasoning
   without emitting tool calls, while Q2_0 completed it perfectly — use Q2_0 for agentic workloads.
   All files deleted again after the test; the recipe above is kept for a future retry.
+  **UD-Q2_0 tested 2026-11-12 (post v0.2.13.1 merge, `strata-ud-q2_0-tuned.json`): PASSED the same opencode
+  bug-hunt task** — clean read→test→edit→retest loop, all 3 planted bugs fixed, 4/4 tests green. So the
+  tool-call failure is specific to the **IQ1_M dense** tensors, not the UD family or the Q2_0 experts:
+  UD-Q2_0 (official Unsloth quant, same expert recipe as Q2mix) is a viable agentic alternative to Q2_0.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
