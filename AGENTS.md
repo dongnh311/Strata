@@ -131,6 +131,13 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   the RUNNING sidecar (pid under the elevated `StrataStack` scheduled task) still serves the old text — the
   Strata-side hint is what protects webchat; the sidecar edit applies next elevated restart. After a merge,
   grep `serve/mcp.py` for `_TOOL_HINTS`.
+- **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
+  failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
+  from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised
+  `NameError` until `ce02ff67`. `.orca/undefined_names.py` lists calls to names bound nowhere in the module; it
+  accepts directories (`python .orca/undefined_names.py serve strata_control strata_cli`) and must print
+  `0 suspicious call(s)` before a merge is done. After a merge, also check `def mcp_note` and
+  `answer_room_reserve` exist.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
@@ -166,10 +173,13 @@ A merge is done only when every box is checked. Skip nothing because "it probabl
       the upstream change is measured faster here.
 - [ ] Confirm every item in the local-changes list above still exists in the merged tree (grep for `_SLOWER`,
       `dflash2Slower`, `STRATA_PCIE_BALANCE`, `trusted_origins`, `expert_profile_save`, `strip_cjk`,
-      `_TOOL_HINTS`).
+      `_TOOL_HINTS`, `mcp_note`, `answer_room_reserve`).
 
 ### After merging — gates, in this order
 
+- [ ] `python .orca/undefined_names.py serve strata_control strata_cli` — 0 suspicious calls. A merge that keeps a
+      call and drops its `def` compiles clean and only fails at runtime: `63cf42a5` (v0.2.10) dropped `mcp_note`
+      and `/v1/messages` + server-side MCP raised `NameError`.
 - [ ] `python -m pytest tests/terminal -k drafting` — only the six known `coder-iq1_m` failures may remain.
 - [ ] `cd apps/host && node --test tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` — all green.
 - [ ] `cd apps/host && npm test` — only the four known old failures (chat-shell #4783, model-directory,
