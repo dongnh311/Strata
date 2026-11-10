@@ -595,6 +595,18 @@ class McpHub:
         self._routes = out
         return out
 
+    # Local guard (this PC): models on small quants fall into a tool loop when a sidecar's exec/attach
+    # tools look like a way to "deliver" content. Append a usage bound to those descriptions so the model
+    # answers inline instead of writing files through a shell command.
+    _TOOL_HINTS = {
+        "exec": (" Do NOT use this tool to produce content the user asked for as an answer (code, HTML, "
+                 "documents): answer with the content inline in your reply instead."),
+        "attach_file": (" Do NOT use this for content you just wrote yourself: put that content in your "
+                        "reply instead."),
+        "write_file": (" Answer with the content inline in your reply instead of writing it to disk."),
+        "create_file": (" Answer with the content inline in your reply instead of writing it to disk."),
+    }
+
     def template_tools(self, exclude=()) -> list[dict]:
         """The tools in the chat template's form ({name, description, parameters}); `exclude`: names the request
         brought itself (those win)."""
@@ -604,7 +616,11 @@ class McpHub:
                 continue
             t = next(x for x in s.tools if x["name"] == tool)
             schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
-            out.append({"name": name, "description": str(t.get("description") or t.get("title") or ""),
+            description = str(t.get("description") or t.get("title") or "")
+            hint = self._TOOL_HINTS.get(tool)
+            if hint and hint not in description:
+                description += hint
+            out.append({"name": name, "description": description,
                         "parameters": schema or {"type": "object", "properties": {}}})
         return out
 

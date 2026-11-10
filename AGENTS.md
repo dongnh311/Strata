@@ -119,6 +119,18 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   All files deleted again after the test; the recipe above is kept for a future retry.
   **UD-Q2_0 tested same day (`strata-ud-q2_0-tuned.json`): PASSED** — both UD quants now do tool calls;
   UD-Q2_0 (official Unsloth quant, same expert recipe as Q2mix) is a viable agentic alternative to Q2_0.
+- **Webchat tool-loop guard (2026-11-10).** With `"strata_mcp": true` the webchat exposes the image sidecar's
+  `exec`/`attach_file`/`read_file` tools; on the "write one HTML file" prompt BOTH Q2_0 and UD-IQ1_M fell into
+  a loop — the model tried to deliver the file by shelling a ~2K-token command through `image__exec`, got a
+  40-char reply, and called again until the client gave up (~300 s, `disconnected`). It is a model-side
+  attractor, not a parse failure — opencode's own tool set never triggers it. Fix lives in `serve/mcp.py`
+  `McpHub._TOOL_HINTS`: `template_tools()` appends a "do NOT use this to produce answer content, reply
+  inline" bound to the descriptions of tools named `exec`, `attach_file`, `write_file`, `create_file` on ANY
+  MCP server. Verified live: replay of the same prompt produced 16000 tokens of inline HTML, zero tool calls.
+  The same wording was also added to `AI-Gateway-MLX/scripts/windows/image-mcp.py` (the sidecar source), but
+  the RUNNING sidecar (pid under the elevated `StrataStack` scheduled task) still serves the old text — the
+  Strata-side hint is what protects webchat; the sidecar edit applies next elevated restart. After a merge,
+  grep `serve/mcp.py` for `_TOOL_HINTS`.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
@@ -153,7 +165,8 @@ A merge is done only when every box is checked. Skip nothing because "it probabl
       behaviour above — when upstream and local disagree on speed/behaviour, the local tuned behaviour wins unless
       the upstream change is measured faster here.
 - [ ] Confirm every item in the local-changes list above still exists in the merged tree (grep for `_SLOWER`,
-      `dflash2Slower`, `STRATA_PCIE_BALANCE`, `trusted_origins`, `expert_profile_save`, `strip_cjk`).
+      `dflash2Slower`, `STRATA_PCIE_BALANCE`, `trusted_origins`, `expert_profile_save`, `strip_cjk`,
+      `_TOOL_HINTS`).
 
 ### After merging — gates, in this order
 
