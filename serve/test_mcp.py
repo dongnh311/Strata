@@ -294,6 +294,8 @@ class ToolLoop(unittest.TestCase):
         self.engine = ScriptedEngine(tok, list(scripts), delay_s=delay_s)
         self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         self.svc.mcp = self.hub
+        self.svc.trusted_origins = ["http://127.0.0.1:8081"]       # the webchat's origin, as production trusts it
+        self.webchat = {"Origin": "http://127.0.0.1:8081"}        # the empty-answer retry is webchat-only
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
@@ -657,7 +659,7 @@ class ToolLoop(unittest.TestCase):
         thinking off must answer, with the reasoning kept in the prompt (the 24K prefix is unchanged for the cache)."""
         self.start("I see the page and the fix.</think" + ">", "Here is the fixed page.")
         self.svc.effort_end = True                                   # the production config's effort_position "end"
-        code, text = self.post({"strata_mcp": True, "reasoning_effort": "low"})
+        code, text = self.post({"strata_mcp": True, "reasoning_effort": "low"}, self.webchat)
         self.assertEqual(code, 200, text)
         cs = self.chunks(text)
         content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
@@ -672,6 +674,47 @@ class ToolLoop(unittest.TestCase):
         self.assertEqual(p1.count("</think" + ">"), 1)              # thinking off's empty block; no empty turn (#843)
         base = p0[:p0.index("check it") + len("check it")]          # control tokens are not in prompt_text
         self.assertTrue(p1.startswith(base))                         # the page's prefix is unchanged
+
+    def test_a_reasoning_only_stop_without_mcp_is_asked_again(self):
+        """The webchat's chat can have no MCP tools; that path stopped silently too (2026-11-10), so it gets the
+        same one retry with thinking off."""
+        self.start("I thought about the page.</think" + ">", "Here is the answer.")
+        self.svc.effort_end = True
+        code, text = self.post({"reasoning_effort": "low"}, self.webchat)          # no strata_mcp: Service.run, not run_with_mcp
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
+        self.assertIn("Here is the answer.", content)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("thinking only", self.engine.prompt_text(1))
+
+    def test_a_rejected_call_only_is_asked_again(self):
+        """A call to a tool this chat does not offer stays text; when it is the whole reply, the chat must still
+        answer instead of showing only the refused call (the live webchat did this on 2026-11-10)."""
+        self.start("I will run a check.</think" + ">\n\n<tool_call>\n<function=image__exec>\n</function>\n"
+                   "</tool_call>", "Here is the answer.")
+        self.svc.effort_end = True
+        code, text = self.post({"reasoning_effort": "low"}, self.webchat)
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
+        self.assertIn("Here is the answer.", content)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("thinking only", self.engine.prompt_text(1))
+
+    def test_a_rejected_call_inside_the_thinking_is_asked_again(self):
+        """The live 17:35 reply wrote an image__exec call inside the thinking and then stopped; no answer reached
+        the chat.  The retry must see it as thinking only, not as a client tool call."""
+        self.start("I will check.\n<tool_call>\n<function=image__exec>\n</function>\n</tool_call>\n"
+                   "Now I know.</think" + ">", "Here is the answer.")
+        self.svc.effort_end = True
+        code, text = self.post({"reasoning_effort": "low"}, self.webchat)
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
+        self.assertIn("Here is the answer.", content)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("thinking only", self.engine.prompt_text(1))
 
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""

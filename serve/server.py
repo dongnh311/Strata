@@ -246,12 +246,39 @@ LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads
 
 
 WEBCHAT_NO_TOOLS = ("exec", "write_file", "create_file")
+TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>.*?</tool_call>", re.S)
 
 
 def without_content_tools(tools):
     """Local guard (this PC): the webchat's HTML loop is the model trying to write the deliverable through a
     sidecar's exec.  Do not offer those tools there, so the model answers inline and the chat shows the reply."""
     return [t for t in tools if t["name"].rsplit("__", 1)[-1].lower() not in WEBCHAT_NO_TOOLS]
+
+
+def empty_answer_note(reasoning) -> str:
+    """The trailing user note of the one retry after a thinking-only stop (this PC, 2026-11-10)."""
+    return ("Your previous reply was thinking only and wrote no answer. That thinking was:\n\n"
+            + "".join(reasoning).strip()
+            + "\n\nAnswer my request above now, in my language, as text in this reply. "
+              "Do not think it through again and do not emit a tool call.")
+
+
+def empty_answer_round(text, reasoning, calls, own_calls, done) -> bool:
+    """True when a round produced no answer to show: thinking only, or only a rejected tool-call block."""
+    if not "".join(reasoning).strip() or calls or own_calls or (done or {}).get("finish") != "stop":
+        return False
+    body = "".join(text).strip()
+    if not body:
+        return True
+    if not (done or {}).get("rejected_tool_calls"):
+        return False
+    return not TOOL_CALL_BLOCK_RE.sub("", body).strip()
+
+
+def prepare_empty_retry(svc, messages, tools, kw, max_req, cancel, reasoning):
+    """Append the note and prepare the retry's prompt with thinking off. -> (ids, thinking, max_new)."""
+    messages.append({"role": "user", "content": empty_answer_note(reasoning)})
+    return svc.prepare(messages, tools, {**kw, "enable_thinking": False}, max_req, cancel=cancel)
 
 
 def answer_room_reserve(max_new: int, tools=None) -> int:
@@ -7276,8 +7303,48 @@ def _answer_from_command(command: str) -> str:
     return page.strip()
 
 
+def run_with_empty_retry(svc: Service, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
+                         aliases=None, force=None, deferred=False):
+    """Service.run, and one retry with thinking off when the reply is thinking only (or only a rejected call).
+    A chat with no MCP tools has no run_with_mcp to do it, and that path stopped silently too (2026-11-10)."""
+    total, empty_retried, done = 0, False, None
+    declared = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+    while True:
+        text, reasoning, calls = [], [], 0
+        for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, aliases=aliases, force=force,
+                               declared_only=True, deferred=deferred):
+            if kind == "done":
+                done = x
+                continue
+            if kind == "event":
+                ev: Event = x
+                if ev.call is not None:
+                    if ev.call.name not in declared:
+                        continue                         # undeclared: it stays text/reasoning, not a client call
+                    calls += 1
+                if ev.kind == "content":
+                    text.append(ev.text)
+                elif ev.kind == "reasoning":
+                    reasoning.append(ev.text)
+            yield kind, x
+        total += done["completion_tokens"]
+        if not empty_retried and not cancel.is_set() and empty_answer_round(text, reasoning, calls, 0, done):
+            empty_retried = True
+            print("[strata] the reply was thinking only, with no answer: asking again without thinking "
+                  "(empty_answer_retry)", flush=True)
+            try:
+                ids, thinking, max_new = prepare_empty_retry(svc, messages, tools, kw, max_req, cancel, reasoning)
+            except ClientGone:                          # #1999: the client left while the prompt was prepared
+                done = {**done, "finish": "cancel"}
+                break
+            force = None
+            continue
+        break
+    yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names, aliases=None):
+                 mcp_names, aliases=None, webchat=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -7288,6 +7355,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
     could not reach the model before the client's)."""
     max_rounds = int(hub.settings["max_rounds"])
+    own_names = {t.get("name") for t in tools or [] if isinstance(t, dict)} - set(mcp_names)
     total, rounds, done = 0, 0, None
     finalizing = False
     empty_retried = False
@@ -7300,12 +7368,15 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 continue
             if kind == "event":
                 ev: Event = x
-                if ev.call is not None and ev.call.name in mcp_names:
-                    if ev.kind == "tool_start":          # the model has started writing a call: say so at once
-                        yield "mcp", {"event": "start", "id": ev.call.id, "name": ev.call.name}
-                    elif ev.kind == "tool_call":
-                        calls.append(ev.call)
-                    continue                             # its argument pieces are not streamed to the client
+                if ev.call is not None:
+                    if ev.call.name in mcp_names:
+                        if ev.kind == "tool_start":      # the model has started writing a call: say so at once
+                            yield "mcp", {"event": "start", "id": ev.call.id, "name": ev.call.name}
+                        elif ev.kind == "tool_call":
+                            calls.append(ev.call)
+                        continue                         # its argument pieces are not streamed to the client
+                    if webchat and ev.call.name not in own_names:
+                        continue                         # undeclared: it stays text/reasoning, not a client call
                 if ev.kind == "tool_call":
                     own_calls += 1
                 elif ev.kind == "content":
@@ -7316,26 +7387,18 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         total += done["completion_tokens"]
         run_them = calls and not own_calls and not finalizing and done["finish"] == "stop" and not cancel.is_set()
         if not run_them:
-            if (not empty_retried and not cancel.is_set() and "".join(reasoning).strip()
-                    and not "".join(text).strip() and not calls and not own_calls
-                    and done["finish"] == "stop"):
+            if (webchat and not empty_retried and not cancel.is_set()
+                    and empty_answer_round(text, reasoning, calls, own_calls, done)):
                 # Local guard (this PC, 2026-11-10): a "fix the page" request with the whole page in the prompt ended
                 # after 2K tokens of thinking with no answer and no call, so the webchat showed the thought and then
                 # nothing.  Ask once more with thinking off.  The note is a user message at the end, so the 24K-token
-                # prefix is unchanged and the engine's conversation cache reuses it.  The thinking is quoted inside
-                # the note, not added as an empty assistant turn: the template drops those on purpose (#843), and
-                # showing the model one would teach it to stop the same way again.
+                # prefix is unchanged and the engine's conversation cache reuses it.
                 empty_retried = True
                 print("[strata] the reply was thinking only, with no answer: asking again without thinking "
                       "(empty_answer_retry)", flush=True)
-                thought = "".join(reasoning).strip()
-                messages.append({"role": "user", "content":
-                    "Your previous reply was thinking only and wrote no answer. That thinking was:\n\n"
-                    + thought + "\n\nAnswer my request above now, in my language, as text in this reply. "
-                    "Do not think it through again and do not emit a tool call."})
-                kw = {**kw, "enable_thinking": False}
                 try:
-                    ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+                    ids, thinking, max_new = prepare_empty_retry(svc, messages, tools, kw, max_req, cancel,
+                                                                 reasoning)
                 except ClientGone:                      # #1999: the client left while the prompt was prepared
                     done = {**done, "finish": "cancel"}
                     break
@@ -9170,8 +9233,11 @@ def make_handler(svc: Service):
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             offered = {t["name"] for t in extra} if use_mcp else set()
-            run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel, offered,
-                               mcp_aliases(svc.mcp.routes(), offered, own)) if use_mcp else None
+            webchat = bool(self.headers.get("Origin")) and not self._foreign_origin()
+            run = (run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
+                                offered, mcp_aliases(svc.mcp.routes(), offered, own), webchat=webchat) if use_mcp else
+                   (run_with_empty_retry(svc, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
+                                         force=force) if webchat else None))
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
@@ -9420,8 +9486,11 @@ def make_handler(svc: Service):
                 raise ValueError(e.anthropic_text()) from None       # #4838: Anthropic's own wording first, Strata's sentence after it
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             offered = {t["name"] for t in extra} if use_mcp else set()
-            run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel, offered,
-                               mcp_aliases(svc.mcp.routes(), offered, own)) if use_mcp else None
+            webchat = bool(self.headers.get("Origin")) and not self._foreign_origin()
+            run = (run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
+                                offered, mcp_aliases(svc.mcp.routes(), offered, own), webchat=webchat) if use_mcp else
+                   (run_with_empty_retry(svc, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
+                                         force=force, deferred=deferred) if webchat else None))
             events = anthropic_events(svc, req, ids, thinking, tools if use_mcp else callable_tools, max_new, cancel,
                                       run=run, force=force, deferred=deferred)
             events = self._capture(events, "anthropic")
