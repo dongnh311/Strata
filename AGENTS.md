@@ -131,6 +131,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   the RUNNING sidecar (pid under the elevated `StrataStack` scheduled task) still serves the old text — the
   Strata-side hint is what protects webchat; the sidecar edit applies next elevated restart. After a merge,
   grep `serve/mcp.py` for `_TOOL_HINTS`.
+  Second half (2026-11-10, the same loop under the 2000-character bound): `McpHub.call` refuses an `exec` whose
+  command carries HTML/code (`_ANSWER_CONTENT`: `<!doctype html`, `<html`, `<canvas`, `<svg`, `<script`) and sets
+  `out["refused"]="answer_content"`; `run_with_mcp` then ends the tool rounds at once (`finalizing=True`,
+  `tools=None`, an "answer inline" system message, event `{"event":"inline"}`), so the model cannot retry the
+  shell write. Verified live: one refused call, one inline answer, no second call, the file was never written.
+  After a merge, grep `serve/mcp.py` for `_ANSWER_CONTENT` and `serve/server.py` for `refused`.
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised

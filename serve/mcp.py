@@ -606,6 +606,9 @@ class McpHub:
         "write_file": (" Answer with the content inline in your reply instead of writing it to disk."),
         "create_file": (" Answer with the content inline in your reply instead of writing it to disk."),
     }
+    # Local guard (this PC): the same loop with the HTML under the 2000-character bound: the model writes the
+    # page with `node -e`, `Set-Content` or a here-string and the shell mangles the quoting, so it retries.
+    _ANSWER_CONTENT = re.compile(r"<!doctype\s+html|<html[\s>]|<canvas[\s>]|<svg[\s>]|<script[\s>]", re.I)
 
     def template_tools(self, exclude=()) -> list[dict]:
         """The tools in the chat template's form ({name, description, parameters}); `exclude`: names the request
@@ -643,6 +646,16 @@ class McpHub:
             text = ("error: command too long for this tool (%d chars). If it writes content the user asked "
                     "for, put that content in your reply instead of shelling it to disk." % len(arguments["command"]))
             ok = False
+            out["refused"] = "answer_content"           # run_with_mcp then ends the tool rounds (one inline answer)
+        elif tool == "exec" and isinstance(arguments, dict) and \
+                isinstance(arguments.get("command"), str) and self._ANSWER_CONTENT.search(arguments["command"]):
+            # The same deliverable under 2000 characters: the shell then mangles the quoting and the model retries
+            # until the round limit.  The chat shows reply text; the page belongs in it, not on disk.
+            text = ("error: this command carries the answer's content (HTML/code), so it was not run - the shell "
+                    "would mangle the quoting. Reply with that content inline in the chat instead.")
+            ok = False
+            out["refused"] = "answer_content"           # run_with_mcp then ends the tool rounds (one inline answer)
+            print("[strata] MCP exec refused: the command carries the answer's content (HTML/code)", flush=True)
         else:
             try:
                 res = server.call(tool, arguments if isinstance(arguments, dict) else {},

@@ -107,6 +107,26 @@ class Client(unittest.TestCase):
         self.assertEqual((r["ok"], r["text"], r["server"], r["tool"]), (True, "hello wörld", "fake", "echo"))
         self.assertEqual(self.hub.call("fake__add", {"a": 2, "b": 40})["text"], "42")
 
+    def test_an_exec_command_that_carries_the_answer_content_is_refused(self):
+        """Local guard (2026-11-10): the webchat's HTML prompt wrote the page through exec under the
+        2000-character bound; the shell mangled the quoting and the model retried until the round limit."""
+        class Stub:
+            name = "image"
+
+            def call(self, tool, arguments, timeout, cancel):
+                return {"content": [{"type": "text", "text": "ran"}]}
+
+        hub = McpHub({})
+        hub._routes["image__exec"] = (Stub(), "exec")
+        for command in ("node -e \"const h = `<!DOCTYPE html><html>`\"",
+                        "Set-Content D:\\x.html '<html><body></body></html>'"):
+            r = hub.call("image__exec", {"command": command})
+            self.assertFalse(r["ok"], command)
+            self.assertIn("answer's content", r["text"])
+        r = hub.call("image__exec", {"command": "echo hi"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["text"], "ran")
+
     def test_errors_become_text(self):
         self.hub.routes()
         r = self.hub.call("fake__fail", {})                         # the tool's own error (isError)

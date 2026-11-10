@@ -7297,7 +7297,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                               "chars": 0, "truncated": False, "ms": 0}
             break
         rounds += 1
-        results, tool_images = [], []
+        results, tool_images, refused = [], [], None
         for c in calls:
             s, tool = hub.routes().get(c.name, (None, c.name))
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
@@ -7324,6 +7324,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             if "r" not in box:
                 break
             r = box["r"]
+            refused = refused or r.get("refused")
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r.get("model_content", r["text"]) if (svc.vision is not None or svc.native_vision is not None) else r["text"])
@@ -7337,7 +7338,20 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
-        if rounds >= max_rounds:
+        if refused:
+            # Local guard (this PC): a call that carried the answer's content was refused, so the tools end here
+            # instead of the model retrying the same shell write (the webchat HTML loop).  One inline answer follows:
+            # the page is in the reply text, which is what the chat shows.
+            finalizing = True
+            tools = None
+            system_end = next((index for index, message in enumerate(messages)
+                               if message.get("role") not in ("system", "developer")), len(messages))
+            messages.insert(system_end, {"role": "system", "content":
+                "A tool refused the call because it carried the user's answer content. No tools are available for "
+                "this reply. Answer the user's original request with that content inline in the chat now, as text in "
+                "your reply; do not write it to a file and do not emit a tool call."})
+            yield "mcp", {"event": "inline", "reason": refused}
+        elif rounds >= max_rounds:
             finalizing = True
             tools = None
             system_end = next((index for index, message in enumerate(messages)
