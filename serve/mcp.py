@@ -636,6 +636,13 @@ class McpHub:
         images: list[dict] = []                     # picture parts for the tool message (result_parts fills it)
         if server is None:
             text, ok = f"error: there is no tool named {name!r}", False
+        elif tool == "exec" and isinstance(arguments, dict) and \
+                isinstance(arguments.get("command"), str) and len(arguments["command"]) > 2000:
+            # Local guard (this PC): the webchat loop's signature is an exec command that embeds a whole
+            # deliverable (HTML/code as a here-string). Refuse it so the model answers inline instead.
+            text = ("error: command too long for this tool (%d chars). If it writes content the user asked "
+                    "for, put that content in your reply instead of shelling it to disk." % len(arguments["command"]))
+            ok = False
         else:
             try:
                 res = server.call(tool, arguments if isinstance(arguments, dict) else {},
