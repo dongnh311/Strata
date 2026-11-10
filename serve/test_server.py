@@ -4619,6 +4619,23 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 2)
         self.assertIn("thinking capped at 150 of max_tokens 300 to leave room for the answer (budget 5000)", out.getvalue())
 
+    def test_a_request_with_tools_keeps_room_for_a_long_call(self):
+        """The webchat's 4000 cap: the thinking took 3000 (the old reserve) and an image__exec call reached 3969 and
+        was cut (finish=length).  A call cut by the cap never runs (run_with_mcp needs "stop"), so the model rewrote
+        it.  With tools offered the answer keeps 2048 below 8192; 8192 (the desktop agent's cap) is unchanged."""
+        from serve.server import answer_room_reserve
+        tool = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object", "properties": {}}}}]
+        self.assertEqual(answer_room_reserve(4000), 1000)
+        self.assertEqual(answer_room_reserve(4000, tool), 2000)
+        self.assertEqual(answer_room_reserve(8192, tool), 2048)
+        self.assertEqual(answer_room_reserve(300, tool), 150)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, b = self.openai(max_tokens=2000, reasoning_budget_tokens=12000, tools=tool)
+        self.assertEqual(code, 200, b)
+        self.assertIn("thinking capped at 1000 of max_tokens 2000 to leave room for the answer (budget 12000)",
+                      out.getvalue())
+
     def test_a_budget_well_below_max_tokens_is_not_capped(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

@@ -224,6 +224,10 @@ ANSWER_ROOM_MIN_CAP = 1024    # 0.1.45: from this max_tokens on, thinking withou
 DS41_DEFAULT_BUDGET = 32768   # DeepSeek-V4.1 only: the thinking budget when neither the request nor the config names one
 DS41_SMALL_CAP_MIN = 48       # DeepSeek-V4.1 only: from this max_tokens up to ANSWER_ROOM_MIN_CAP, thinking is capped at half of it
 ANSWER_RESERVE_MIN = 512     # #984: the tokens kept for the answer when a thinking budget is cut down to fit max_tokens
+TOOL_ANSWER_RESERVE_MIN = 2048  # a request that offers tools keeps this much of a small max_tokens for the answer: a
+                                # call's arguments (a file's text, a command) are part of it, and a call cut by the cap
+                                # is never run (run_with_mcp needs finish "stop")
+TOOL_ANSWER_RESERVE_BELOW = 8192  # only caps below this; 8192 already keeps 2048 and is the desktop agent's cap
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
 # #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
@@ -239,6 +243,19 @@ LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-w
 LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
 LOOP_TAIL_CHARS = 2048           # chars at the end of the reasoning also checked for a short period (#1753)
 LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads as a fully repeated window
+
+
+def answer_room_reserve(max_new: int, tools=None) -> int:
+    """The tokens kept for the answer when a thinking budget is cut down to fit max_tokens (#984): max(512, a
+    quarter), at most half.  A request that offers tools keeps TOOL_ANSWER_RESERVE_MIN below
+    TOOL_ANSWER_RESERVE_BELOW: a call's arguments (a file's text, a shell command) are part of the answer, and a
+    call cut by the cap is not run at all (run_with_mcp needs finish "stop"), so the model tries it again."""
+    if not max_new or max_new <= 0:
+        return 0
+    reserve = min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
+    if tools and max_new < TOOL_ANSWER_RESERVE_BELOW:
+        reserve = min(max(reserve, TOOL_ANSWER_RESERVE_MIN), max_new // 2)
+    return reserve
 
 
 def reasoning_repeat_coverage(text):
@@ -6541,7 +6558,7 @@ class Service:
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
             # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
-            budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
+            budget = max_new - answer_room_reserve(max_new, tools)
             if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
         if (thinking and not budget and self.answer_room and self.family == "deepseek41"
@@ -6555,7 +6572,7 @@ class Service:
         if budget and max_new and max_new > 0:
             # #984: a budget at or near max_tokens never fires before the reply is cut off while still thinking, so
             # it has no answer.  Close the thinking early enough to leave room for one.
-            reserve = min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
+            reserve = answer_room_reserve(max_new, tools)
             if budget > max_new - reserve:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
