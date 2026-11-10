@@ -245,6 +245,15 @@ LOOP_TAIL_CHARS = 2048           # chars at the end of the reasoning also checke
 LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads as a fully repeated window
 
 
+WEBCHAT_NO_TOOLS = ("exec", "write_file", "create_file")
+
+
+def without_content_tools(tools):
+    """Local guard (this PC): the webchat's HTML loop is the model trying to write the deliverable through a
+    sidecar's exec.  Do not offer those tools there, so the model answers inline and the chat shows the reply."""
+    return [t for t in tools if t["name"].rsplit("__", 1)[-1].lower() not in WEBCHAT_NO_TOOLS]
+
+
 def answer_room_reserve(max_new: int, tools=None) -> int:
     """The tokens kept for the answer when a thinking budget is cut down to fit max_tokens (#984): max(512, a
     quarter), at most half.  A request that offers tools keeps TOOL_ANSWER_RESERVE_MIN below
@@ -9123,7 +9132,7 @@ def make_handler(svc: Service):
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
                     return
                 svc.mcp.wait(10)                                  # servers still starting (only right after start)
-                extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
+                extra = without_content_tools(svc.mcp.template_tools(exclude=own))   # local: no exec in webchat
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             if force and use_mcp:
@@ -9372,7 +9381,7 @@ def make_handler(svc: Service):
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
                     return
                 svc.mcp.wait(10)
-                extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
+                extra = without_content_tools(svc.mcp.template_tools(exclude=own))   # local: no exec in webchat
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent

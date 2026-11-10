@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import MAX_RESULT_IMAGES, McpCancelled, McpHub, hub_from_config, result_parts, result_text  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service, _answer_from_command, serve  # noqa: E402
+from serve.server import ByteTokenizer, MockEngine, Service, _answer_from_command, serve, without_content_tools  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = str(ROOT / "serve" / "mcp_fake_server.py")
@@ -136,6 +136,14 @@ class Client(unittest.TestCase):
         self.assertEqual(_answer_from_command('node -e "const h = `<html>\\n<body>hi</body>\\n</html>`"'),
                          "<html>\n<body>hi</body>\n</html>")
         self.assertEqual(_answer_from_command("echo hi"), "")
+
+    def test_the_webchat_is_not_offered_exec(self):
+        """Local guard (2026-11-10): without exec in the list the model cannot try to write the page through a
+        shell command, which is what looped at max_tokens 4000."""
+        tools = [{"name": "image__exec"}, {"name": "image__generate_image"},
+                 {"name": "image__write_file"}, {"name": "image__attach_file"}]
+        self.assertEqual([t["name"] for t in without_content_tools(tools)],
+                         ["image__generate_image", "image__attach_file"])
 
     def test_errors_become_text(self):
         self.hub.routes()
