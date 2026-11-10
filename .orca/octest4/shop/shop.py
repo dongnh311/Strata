@@ -2,6 +2,8 @@
 
 TIER_RATES = {"bronze": 0.05, "silver": 0.08, "gold": 0.12}
 
+COUPONS = {"SAVE10": 0.10}
+
 
 class Item:
     def __init__(self, name, price, qty=1):
@@ -29,9 +31,9 @@ class Cart:
         return self.subtotal() * TIER_RATES[tier]
 
     def coupon_discount(self):
-        if self.coupon == "SAVE10":
-            return self.subtotal() * 0.10
-        return 0.0
+        if self.coupon is None:
+            return 0.0
+        return self.subtotal() * COUPONS.get(self.coupon, 0.0)
 
     def total(self):
         return self.subtotal() - self.discount() - self.coupon_discount()
