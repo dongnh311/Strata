@@ -96,6 +96,26 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   server from 8081 / 8443 / LAN; without it MCP answers "only from Strata's own page". Re-read `"drafting"`,
   `--vram-reserve-mib 1472` and the conversation cache (10078 / 6 / 8000 / 1536) after any Save in the Models screen:
   that screen can write its old numbers back. The backup of the broken file: `strata-ud-iq1_m.bak-20261106.json`.
+  `env` also carries `STRATA_PCIE_BALANCE=1` — A/B'd 2026-11-09 on this PC (`.orca/ud-ab.py`, results in
+  `.orca/ud-ab-*.result.txt`): decode median ~48.5 tok/s vs ~45 without, prefill unchanged; `STRATA_ADAPT_OVERLAP=1`
+  alone and combined with it did NOT help (median ~45–46.5) — do not add it back.
+- **Q2mix tested twice, removed again (2026-11-09).** The HF repo
+  `dongnhdev/Qwen3.8-Flash-Next-Q2mix-Hybrids` ships GGUFs whose `split.count` metadata is wrong
+  (declares 2 shards, only 1 exists). To run it: download the two GSQ-RCO Q2_0 shards +
+  `pack-iq1m/` (~108 GB total; the `mtp-ds4`/`PLE-Q4_1`/second-experts files are ds4-only, skip them),
+  then patch in place with `.orca/gguf_kv_patch.py`:
+  - `UD-IQ1_M-Q2_0-experts-00001-of-00002.gguf` → rename to `UD-IQ1_M-Q2_0-experts.gguf`, set `split.count`=1
+    (the pack's `native_experts.txt` offsets match THIS file, not the GSQ-RCO-00001 shard — verified by
+    tensor offsets; `--native` must point at it)
+  - `Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf` (the `--ple-gguf` sidecar): set `split.count`=1,
+    rename key `split.no`→`split.xo`
+  - Do NOT pass `--mmap-experts`: it opts out of the ~32 GiB resident expert arena and decode collapses
+    to ~20 tok/s (needs ~33 GiB free RAM at start or the arena won't fit and it falls back to the file anyway).
+  Measured 2026-11-09 (arena mode, engine 0.1.57): prefill 794/945 tok/s, decode 41–48 tok/s median ~46,
+  slots 2258 — same as the first run. HumanEval earlier: 51/60. **Tool-calling is unreliable on the
+  UD-IQ1_M dense family**: in an opencode bug-hunt task both Q2mix and UD-IQ1_M stopped after reasoning
+  without emitting tool calls, while Q2_0 completed it perfectly — use Q2_0 for agentic workloads.
+  All files deleted again after the test; the recipe above is kept for a future retry.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the

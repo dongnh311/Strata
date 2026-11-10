@@ -138,7 +138,7 @@ pre-fill 3.423 slot; CPU pool **13 worker**, host thread ở core 0 (`--host-cor
 | `STRATA_QSA_ROWS`, `ATTN_DAILY`, `SIDE_MIXER`, `B6_MMVQ_ROWS` | on (sm_86) | kernel decode mặc định | đã bật sẵn |
 | `STRATA_ADAPT_OVERLAP=1` | – | copy cache expert chồng lên window sau | +4–8% trên A4000/P100; **thử trên 3060** |
 | `STRATA_ADAPT_LAG=2` | on (sm_86) | swap trễ 2 window | đã bật |
-| `STRATA_PCIE_BALANCE=1` | – | cân số expert đọc PCIe mỗi layer | +5.6% A4000, hại máy khác |
+| `STRATA_PCIE_BALANCE=1` | – | cân số expert đọc PCIe mỗi layer | **ĐÃ BẬT trong strata-ud-iq1_m.json (09/11): decode median ~48.5 vs ~45, prefill không đổi — xem .orca/ud-ab-*.result.txt** |
 
 ### 3.3 VRAM / expert cache / KV
 
