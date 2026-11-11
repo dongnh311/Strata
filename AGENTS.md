@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Version 0.2.13.1 (source merged from upstream v0.2.13.1; the prebuilt engine binary on this PC is still 0.1.57 — a source merge does not rebuild it), engine 0.1.59. The public model families are DeepSeekV4.1-Flash-1017,
+Version 0.2.13.1 (source merged from upstream v0.2.13.1; the engine binary on this PC is now 0.1.59.1, built from this source into `D:\GitHub\Strata-data\build-v031`; the old `build-v030` stays for rollback), engine 0.1.59.1. The public model families are DeepSeekV4.1-Flash-1017,
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. DeepSeek V4.1-Flash runs in the app and in the Terminal
 (`strata launch --family deepseek41 --model ist-das-2.00bpw`; sets in
 [docs/MODELS.md](docs/MODELS.md#deepseek-v41-flash)). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
@@ -153,6 +153,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   distracted into tool rounds. Log line `empty_answer_retry`; tests
   `serve/test_mcp.py::test_a_reasoning_only_stop_without_mcp_is_asked_again` and its MCP, rejected-call and
   inside-thinking siblings. The fixed page is `serve/web/car-page.html` (also `.orca/car-page.html`).
+- **Engine rebuilt from source (2026-11-11).** `D:\GitHub\Strata-data\build-v031\strata.exe` is 0.1.59.1, built
+  by `.orca\build-v031.cmd` (same flags as build-v030); `strata-q2_0-v144-refusal.json` names it and build-v030
+  stays for rollback. The v0.2.13.1 merge had dropped `kNativeFF` from `native_expert.hpp` (the CPU pool did not
+  compile) and the tokenizer fallback in `serve/server.py` (`tok`/`tcfg` unbound without `vocab.json`); both
+  restored. Long-context 244,046 tokens: prefill 905.3 tok/s, decode 50.4 tok/s, draft 1580/2008 — at the Q2_0
+  floor (816–1003 / 48.6–55.7).
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised

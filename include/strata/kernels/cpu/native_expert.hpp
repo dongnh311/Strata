@@ -29,6 +29,8 @@ inline constexpr size_t kNativeActBytes =
 /// and it grows with the compiled expert width (1024 values as Q8_K need 1168).
 inline constexpr size_t kNativeHBytes =
     native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 1024 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 1024;
+/// The widest expert width the CPU pool buffers (n_ff); native_fmt rejects layers wider than this.
+inline constexpr int kNativeFF = 2048;
 
 /// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
 enum class NativeArithmetic { Default, WindowInvariant };
