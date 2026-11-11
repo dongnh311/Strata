@@ -483,6 +483,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 
 | Key | Default | Effect |
 | --- | --- | --- |
+| `system_prompt` | none | One instruction the model reads before every request, as the first `system` message, whoever the client is; a client's own system prompt comes after it. The web page's Chat settings have a separate System prompt field for that browser. Text that does not change keeps its place in the conversation cache. |
 | `reasoning_effort` | model default (high) | Level for requests that name none. The engine has no such option; `--reasoning-effort` in `"args"` is moved here with a note. A request's level and the web page's shared Chat settings win. |
 | `reasoning_budget_tokens` | `0` (no budget) | Caps the thinking at N tokens: the server ends it with a short wrap-up line and `</think>` and the model answers from there. The wrap-up counts as output tokens. A request's own `reasoning_budget_tokens` (or llama.cpp's `thinking_budget_tokens`) wins. |
 | `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. Requests without `max_tokens` get three quarters of the context. `false` turns it off. Clients should not cap the reply far below what the context allows. |

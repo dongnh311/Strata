@@ -26,7 +26,7 @@ from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDi
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
-                          request_stats, request_timings, serve, start_failure_hint)
+                          request_stats, request_timings, serve, start_failure_hint, system_prompt_of)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1080,6 +1080,74 @@ class ConfigApiKey(unittest.TestCase):
         code, key, err = self.run_main({})
         self.assertEqual((code, key), (0, ""))
         self.assertNotIn("is empty", err)
+
+
+class SystemPrompt(unittest.TestCase):
+    """The config's "system_prompt": one rule every request reads before anything else, whoever the client is."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                           ChatTemplate(ROOT / "serve/chat_template.jinja"))
+
+    def prompt(self, messages, rule=""):
+        self.svc.system_prompt = rule
+        return self.tok.decode(self.svc.encode_prompt(messages, None, {}))
+
+    def test_no_rule_leaves_the_prompt_as_it_was(self):
+        chat = [{"role": "user", "content": "hello"}]
+        self.assertEqual(self.prompt(chat), self.prompt(chat, ""))
+        self.assertEqual(self.prompt(chat), self.prompt(chat, "   "))     # a config value of spaces is no rule
+
+    def test_the_rule_is_read_before_the_client_s_own_system_prompt(self):
+        text = self.prompt([{"role": "system", "content": "CLIENT SYS"},
+                            {"role": "user", "content": "hello"}], "RULE ONE")
+        self.assertLess(text.index("RULE ONE"), text.index("CLIENT SYS"))
+        self.assertLess(text.index("CLIENT SYS"), text.index("hello"))
+
+    def test_the_rule_is_never_read_twice(self):
+        text = self.prompt([{"role": "system", "content": "RULE ONE"},
+                            {"role": "user", "content": "hello"}], "RULE ONE")
+        self.assertEqual(text.count("RULE ONE"), 1)
+
+    def test_the_config_value_is_one_string_or_the_start_stops(self):
+        self.assertEqual(system_prompt_of("  RULE ONE\n"), "RULE ONE")
+        self.assertEqual(system_prompt_of(None), "")
+        for wrong in (["RULE"], {"rule": "x"}, 7, True):
+            with self.assertRaises(SystemExit):
+                system_prompt_of(wrong)
+
+
+class SystemPromptFromConfig(unittest.TestCase):
+    """main() puts the config's rule on the service every request reads - and says so in the log."""
+
+    def run_main(self, cfg):
+        import serve.server as S
+        seen = {}
+
+        def fake_serve(svc, host=None, port=None):
+            seen["rule"] = svc.system_prompt
+            raise _Reached
+
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(S, "serve", fake_serve), \
+                mock.patch.object(sys, "stdout", new=out):
+            p = Path(d) / "cfg.json"
+            p.write_text(json.dumps(cfg), encoding="utf-8")
+            with mock.patch.object(sys, "argv", ["server.py", "--engine", "mock", "--port", "0", "--config", str(p)]):
+                with self.assertRaises(_Reached):
+                    S.main()
+        return seen.get("rule"), out.getvalue()
+
+    def test_the_config_s_rule_reaches_the_service(self):
+        rule, out = self.run_main({"system_prompt": "  RULE ONE  "})
+        self.assertEqual(rule, "RULE ONE")
+        self.assertIn("system prompt: 8 characters", out)
+
+    def test_no_rule_is_no_rule_and_no_log_line(self):
+        rule, out = self.run_main({})
+        self.assertEqual(rule, "")
+        self.assertNotIn("system prompt", out)
 
 
 class ApiKeyForms(unittest.TestCase):

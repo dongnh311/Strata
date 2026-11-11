@@ -159,8 +159,16 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   compile) and the tokenizer fallback in `serve/server.py` (`tok`/`tcfg` unbound without `vocab.json`); both
   restored. Long-context 244,046 tokens: prefill 905.3 tok/s, decode 50.4 tok/s, draft 1580/2008 — at the Q2_0
   floor (816–1003 / 48.6–55.7).
+- **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
+  first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
+  applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
+  webchat's own System prompt comes after it; a conversation that already starts with the same text is not doubled. The
+  text is the "check your own work before answering" rule (read code back, name the exact line, never claim a test you
+  did not run). A model switch reads that config's rule (`profile_state` / `_apply_profile`). Absent or empty = the old
+  prompt, byte for byte.
 - **Webchat system prompt (2026-11-11).** Chat settings → System prompt (`#s-system` in `serve/web/index.html`,
-  `settings.system` in `serve/web/app.js`) is sent as the first `system` message of every chat request. It is per
+  `settings.system` in `serve/web/app.js`) is sent as a `system` message of every chat request, after the server's
+  `system_prompt` rule. It is per
   browser/origin (localStorage), not in the server's shared settings; empty = no custom prompt. The API itself
   already takes a `system` message (OpenAI) or a top-level `system` (Anthropic).
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the

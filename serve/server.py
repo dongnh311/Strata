@@ -4968,6 +4968,7 @@ class Service:
         self.before_load = None
         self.strip_cjk = False                           # the config's "strip_cjk": see CjkStripper
         self.strip_cjk_ignore_system = False             # its "strip_cjk_ignore_system": system-prompt CJK (a skill list) does not switch it off
+        self.system_prompt = ""                          # the config's "system_prompt": one rule every request reads first (empty: none)
         self.cjk_stats = {"requests_touched": 0, "chars_removed": 0}
         self.before_load_timeout_s = 120.0               # #1997: how long the before_load command may run
         self.before_load_ignore_failure = False          # #1997: load even when it fails, without a VRAM check
@@ -5731,7 +5732,8 @@ class Service:
                 "config_effort": effort, "reasoning_budget_tokens": budget, "shared_path": shared_path,
                 "shared": shared, "gpu_indices": gpu_list(cfg), "backend": cfg.get("backend"),
                 "fit_max_tokens": self.fit_max_tokens_flag or cfg.get("fit_max_tokens") is True,
-                "reasoning_close_retry": cfg.get("reasoning_close_retry") is True}
+                "reasoning_close_retry": cfg.get("reasoning_close_retry") is True,
+                "system_prompt": system_prompt_of(cfg.get("system_prompt"))}
 
     def _apply_profile(self, st: dict) -> None:
         """Serve the model of profile_state's `st` from now on (the engine stopped; the next ensure_loaded starts it)."""
@@ -5751,6 +5753,7 @@ class Service:
         self.reasoning_budget_tokens = st["reasoning_budget_tokens"]
         self.fit_max_tokens, self.reasoning_close_retry = st["fit_max_tokens"], st["reasoning_close_retry"]
         self.config_path, self.shared_path, self.shared = st["path"], st["shared_path"], st["shared"]
+        self.system_prompt = st["system_prompt"]        # a switch reads the other config's rule, not the old one's
         self.gpu_indices, self.backend = st["gpu_indices"], st["backend"]
         self.gpu_index = (st["gpu_indices"] or [0])[0]
         self.restore_after_load = None                  # an image job's saved conversation was the other model's
@@ -6116,6 +6119,18 @@ class Service:
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
 
+    def with_system_prompt(self, messages) -> list[dict]:
+        """The request's messages with the config's "system_prompt" in front, as the first system turn: the operator's
+        rule is read before the client's own system prompt, so a client cannot replace it.  A conversation that already
+        starts with the same text is left alone - the rule is never read twice."""
+        rule = self.system_prompt
+        if not rule:
+            return messages
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system" \
+                and messages[0].get("content") == rule:
+            return messages
+        return [{"role": "system", "content": rule}, *messages]
+
     def render_prompt(self, messages, tools, kwargs) -> str:
         """The template rendered.  #458: with `effort_end`, a request with a non-default effort (low, medium or no
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
@@ -6140,6 +6155,7 @@ class Service:
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
         the control tokens the template writes are control tokens.  `store=False` (a token count) reuses the kept
         prompts without adding or replacing one."""
+        messages = self.with_system_prompt(messages)
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         pics = getattr(self.native, "pics", None)
@@ -9821,6 +9837,17 @@ def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     return httpd
 
 
+def system_prompt_of(value) -> str:
+    """The config's "system_prompt": one instruction the model reads before every request, whoever the client is.
+    Empty or absent: none (the prompt is byte-for-byte what it was).  A value of another type stops the start rather
+    than being silently dropped: a rule the operator thinks is on, but is not, is worse than no rule."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SystemExit('[strata] system_prompt: expected one string (the text the model reads first)')
+    return value.strip()
+
+
 def origins_of(value, key: str, wildcard: bool) -> list[str]:
     """#321: a config's origin list ("https://chat.example.com" or a list of them) - scheme://host[:port], no path;
     "*" only where `wildcard` allows it.  A wrong entry stops the start rather than opening less or more than meant."""
@@ -11003,6 +11030,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     svc.before_load = a.before_load or cfg.get("before_load") or None
     svc.strip_cjk = bool(cfg.get("strip_cjk"))
     svc.strip_cjk_ignore_system = bool(cfg.get("strip_cjk_ignore_system"))
+    svc.system_prompt = system_prompt_of(cfg.get("system_prompt"))
+    if svc.system_prompt:
+        print(f"[strata] system prompt: {len(svc.system_prompt)} characters from the config, read first by every "
+              "request (system_prompt)", flush=True)
     try:
         svc.before_load_timeout_s = float(cfg.get("before_load_timeout_s") or svc.before_load_timeout_s)
     except (TypeError, ValueError):
