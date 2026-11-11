@@ -28,9 +28,9 @@ STACK = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\ADMIN\AppData\Local")) / 
 WEB_DIR = HOME / "serve" / "web"
 LOG = STACK / "model-router.log"
 VENV_PY = HOME / ".venv" / "Scripts" / "python.exe"
-QWEN_CFG = HOME / "strata-q2_0-v144-refusal.json"
+QWEN_CFG = HOME / "strata-ud-iq1_m.json"
 QWEN_PORT = 18080
-QWEN_ID = "qwen38-q2_0-refusal"
+QWEN_ID = "qwen38-ud-iq1_m"
 PORT = int(os.environ.get("MODEL_ROUTER_PORT", "8081"))
 NO_WINDOW = 0x08000000
 

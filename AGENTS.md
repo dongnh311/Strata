@@ -159,6 +159,14 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   compile) and the tokenizer fallback in `serve/server.py` (`tok`/`tcfg` unbound without `vocab.json`); both
   restored. Long-context 244,046 tokens: prefill 905.3 tok/s, decode 50.4 tok/s, draft 1580/2008 — at the Q2_0
   floor (816–1003 / 48.6–55.7).
+- **Production switched to UD-IQ1_M (2026-11-11).** `strata-ud-iq1_m.json` names the 0.1.59.1 engine, carries the same
+  `api_key` and the same `system_prompt` rule as Q2_0, and `model_name` is `qwen38-ud-iq1_m`. The router's
+  `QWEN_CFG`/`QWEN_ID` (the repo copy and the deployed `%LOCALAPPDATA%\strata-stack\model-router.py`) name it, so a
+  restart brings back IQ1_M, not Q2_0; the Q2_0 config is untouched for rollback. Load on this PC: 32.42 GiB of experts
+  in RAM (18 s), 2498 expert slots, 3.33 GiB expert cache, `vram_free_mib` 1464, `drafting=mtp`, `spec=12`, context
+  262144; a webchat request with `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` answered. The config before
+  the edit is `strata-ud-iq1_m.bak-20261111-pre-iq1m-load.json`; its `reasoning_effort` is still `"low"` (the webchat
+  sends its own level, other clients do not). Speed on 0.1.59.1 is not measured yet.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
