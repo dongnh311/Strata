@@ -212,6 +212,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   27.2 / 1,338, chunk 9.2 / 431, arrow fix 5.3 / 199, off-by-one 5.7 / 217 — about 174 s against IQ1_M's 263 s); the
   car page **419.0 s / 24,341 tok** (IQ1_M 350.6 s), parses under `node --check` and the `=>` is fixed. Quality is equal
   on this battery; Q2_0 is slower on the long page, as at 244K.
+- **UD-Q2_0 now uses the model card's sampling (2026-11-11).** The `"sampling"` block (temperature 1.0 / top_p 0.95 /
+  top_k 20) was removed from `strata-ud-q2_0-tuned.json` so the server's `MODEL_CARD_SAMPLING` decides per thinking
+  state: thinking 1.0 / 0.95 / 20, instruct 0.7 / 0.80 / 20 + `presence_penalty` 1.5 (min_p 0, repetition_penalty 1.0
+  in both) — Unsloth's recommended settings. `/props` reports 1.0 / 0.95 / 20, the startup line "sampling defaults from
+  the config" is gone, and the server was restarted. Config backup: `strata-ud-q2_0-tuned.json.bak-20261111-pre-default-sampling`.
+  IQ1_M and the v144 config still set temperature 0.3, which overrides both states.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
