@@ -862,7 +862,7 @@ function markdown(text) {
 // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, espScale: 1, mcp: true, math: false,
+const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", system: "", show: true, esp: true, espScale: 1, mcp: true, math: false,
                   chatList: false, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
@@ -1155,6 +1155,7 @@ $("chat").addEventListener("toggle", (e) => {
 
 function apiMessages() {
   const out = [];
+  if (settings.system) out.push({role: "system", content: settings.system});
   for (const m of messages) {
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
@@ -1616,6 +1617,7 @@ function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  $("s-system").value = s.system || "";
   $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
@@ -1694,6 +1696,7 @@ $("s-apply").onclick = async () => {
   const locked = !!busy || !!panel;
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+              system: $("s-system").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"),
               espScale: +$("s-esp-scale").value, mcp: checked("s-mcp"),
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),

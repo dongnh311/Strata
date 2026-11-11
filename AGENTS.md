@@ -159,6 +159,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   compile) and the tokenizer fallback in `serve/server.py` (`tok`/`tcfg` unbound without `vocab.json`); both
   restored. Long-context 244,046 tokens: prefill 905.3 tok/s, decode 50.4 tok/s, draft 1580/2008 — at the Q2_0
   floor (816–1003 / 48.6–55.7).
+- **Webchat system prompt (2026-11-11).** Chat settings → System prompt (`#s-system` in `serve/web/index.html`,
+  `settings.system` in `serve/web/app.js`) is sent as the first `system` message of every chat request. It is per
+  browser/origin (localStorage), not in the server's shared settings; empty = no custom prompt. The API itself
+  already takes a `system` message (OpenAI) or a top-level `system` (Anthropic).
 - **Runtime merge-loss gate (2026-11-10).** A merge can keep a call and drop its `def`: Python compiles and the
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised
