@@ -166,7 +166,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   in RAM (18 s), 2498 expert slots, 3.33 GiB expert cache, `vram_free_mib` 1464, `drafting=mtp`, `spec=12`, context
   262144; a webchat request with `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` answered. The config before
   the edit is `strata-ud-iq1_m.bak-20261111-pre-iq1m-load.json`; its `reasoning_effort` is still `"low"` (the webchat
-  sends its own level, other clients do not). Speed on 0.1.59.1 is not measured yet.
+  sends its own level, other clients do not). Speed on 0.1.59.1: `bench-pack-ab.py` 13K cold 798 tok/s prefill / 45.5
+  decode, 55K cold 947 / 44.9, re-read 13K reads 35 tokens (first token 0.56 s); the 244,791-token prompt 816.8 / 45.0,
+  draft 1564/2120 (73.8%). All inside the 0.1.57 floor (770–800, 909–948, 41–48). At 244K it is ~10% behind Q2_0
+  (905.3 / 50.4), as the 1-bit pack was before.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
