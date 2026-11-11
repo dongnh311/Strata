@@ -170,6 +170,13 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   decode, 55K cold 947 / 44.9, re-read 13K reads 35 tokens (first token 0.56 s); the 244,791-token prompt 816.8 / 45.0,
   draft 1564/2120 (73.8%). All inside the 0.1.57 floor (770–800, 909–948, 41–48). At 244K it is ~10% behind Q2_0
   (905.3 / 50.4), as the 1-bit pack was before.
+- **Basalt's self-distilled MTP on UD-IQ1_M (2026-11-11).** The drafter now comes from
+  `D:\GitHub\Strata-data\mtp\basalt-rt`: Basalt's `convert/mtp/rt/dense.bin` (116,099,072 bytes, SHA256 `DFE18647…`,
+  a drop-in for the original `C724DC0B…`), with `experts.bin` and `draft_vocab.bin` hardlinked from `mtp\rt` and the
+  same `dense.txt` (29 tensors, same offsets). Same 244,791-token prompt: **832.0 tok/s prefill, 47.0 tok/s decode,
+  draft 1598/2115 (75.6%)** against 816.8 / 45.0 / 1564/2120 (73.8%) before — +4.4% decode, so it is kept. 55K cold
+  draft 73/81 (90.1%) against 43/56 (76.8%). The pre-switch config is `strata-ud-iq1_m.bak-20261111-pre-basalt-mtp.json`;
+  MTP is verified, so this is speed only, output unchanged.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
