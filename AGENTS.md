@@ -192,6 +192,16 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   / 24,348 tokens**, the returned page parses under `node --check` and the missing `=>` is fixed. So a whole-page fix
   needs `max_tokens` 32,768 or empty with high thinking. The 244 KB mix still misdiagnoses (parallax), so the model is
   reliable on a focused file and not on a bug buried in a long context.
+- **Vision moved to the GPU, elastic (2026-11-11).** The vision section was `"gpu": false` (CPU reader, 12 threads,
+  1024 image tokens): a new picture took 10.1–10.3 s to read, a repeat 2.4 s. It is now `"gpu": true`, `"elastic": true`
+  with the config's `"vram_elastic": true`: the encoder starts with the first picture (3.3 s, 1159 MiB of VRAM), a cold
+  picture 6.8 s, a new picture with the encoder up 4.1 s, a repeat 2.4 s. While it is up the expert cache keeps 2048 MiB
+  free (3072 of 3493 MiB left); text decode measured 49.9–50.3 tok/s against 51.3–52.1 with it down (noise). After 120 s
+  without a picture it stops and the cache returns (3494 of 3493 MiB); slots stay 2559. `vram_free_mib` reads 1294
+  instead of 1464 (above the 1024 floor). Accuracy: the two synthetic sets (14–16 px invoice/table text, shapes and
+  text) 10/10 on the CPU and again 10/10 on the GPU, the Basalt banner 4/4 (the word, hexagons, one orange hexagon) —
+  same answers on both devices. The 1024-token image cap stays. The code's owner note "the picture reader lives in RAM,
+  not VRAM" is overridden on this PC only; the pre-switch config is `strata-ud-iq1_m.bak-20261111-pre-vision-gpu.json`.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
