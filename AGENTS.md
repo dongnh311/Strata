@@ -208,6 +208,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   decode 46.9 tok/s, draft 1678/2197 (76.4%)** against IQ1_M's 831.7 / 51.5 / 80.5% — **IQ1_M is ~9% faster** at 244K.
   Short bench mixed (13K cold 48.9 vs 51.3, 55K cold 54.4 vs 52.1, 55K draft 38/39). The car page is misdiagnosed by
   both, so the 2-bit quality does not show in that test. Pre-edit config: `strata-ud-q2_0-tuned.json.bak-20261111-pre-run`.
+  Same battery as IQ1_M: **6/6 code tasks pass** (duration 112.7 s / 6,325 tok, merge_intervals 14.0 / 659, top_words
+  27.2 / 1,338, chunk 9.2 / 431, arrow fix 5.3 / 199, off-by-one 5.7 / 217 — about 174 s against IQ1_M's 263 s); the
+  car page **419.0 s / 24,341 tok** (IQ1_M 350.6 s), parses under `node --check` and the `=>` is fixed. Quality is equal
+  on this battery; Q2_0 is slower on the long page, as at 244K.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
