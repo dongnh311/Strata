@@ -185,6 +185,13 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   1598/2115 (75.6%) with the shipped English/code subset — **+9.6% decode**. It drops most Japanese/Chinese ids (the
   old subset had 106,299); the old file stays at `mtp\rt\draft_vocab.bin`. The pre-switch config is
   `strata-ud-iq1_m.bak-20261111-pre-vi-vocab.json`.
+- **Code test on UD-IQ1_M (2026-11-11).** Six focused tasks through the webchat path (`Origin` 8081,
+  `reasoning_effort: high`, no tools): duration parser, merge intervals, top words, a JS `chunk`, the JS arrow fix and a
+  JS off-by-one fix — **6/6 pass** against hidden tests run outside the model. The buggy car page alone (29 KB, not the
+  900 KB mix): `finish=length` at `max_tokens` 16,384 in two runs (page cut at 10,260 chars); **32,768 finished in 350 s
+  / 24,348 tokens**, the returned page parses under `node --check` and the missing `=>` is fixed. So a whole-page fix
+  needs `max_tokens` 32,768 or empty with high thinking. The 244 KB mix still misdiagnoses (parallax), so the model is
+  reliable on a focused file and not on a bug buried in a long context.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
