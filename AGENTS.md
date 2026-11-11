@@ -202,6 +202,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   text) 10/10 on the CPU and again 10/10 on the GPU, the Basalt banner 4/4 (the word, hexagons, one orange hexagon) —
   same answers on both devices. The 1024-token image cap stays. The code's owner note "the picture reader lives in RAM,
   not VRAM" is overridden on this PC only; the pre-switch config is `strata-ud-iq1_m.bak-20261111-pre-vision-gpu.json`.
+- **UD-Q2_0 measured on 0.1.59.1 (2026-11-11).** `strata-ud-q2_0-tuned.json` was repointed to `build-v031` and given
+  the same MTP (`mtp\basalt-rt`), draft vocabulary, `api_key` and `system_prompt` as IQ1_M; the router named it. Load:
+  **2,407 expert slots**, 34.79 GiB of experts in RAM, `vram_free` 1462. The 244,791-token prompt: **prefill 825.6 tok/s,
+  decode 46.9 tok/s, draft 1678/2197 (76.4%)** against IQ1_M's 831.7 / 51.5 / 80.5% — **IQ1_M is ~9% faster** at 244K.
+  Short bench mixed (13K cold 48.9 vs 51.3, 55K cold 54.4 vs 52.1, 55K draft 38/39). The car page is misdiagnosed by
+  both, so the 2-bit quality does not show in that test. Pre-edit config: `strata-ud-q2_0-tuned.json.bak-20261111-pre-run`.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
