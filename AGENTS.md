@@ -177,6 +177,14 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   draft 1598/2115 (75.6%)** against 816.8 / 45.0 / 1564/2120 (73.8%) before — +4.4% decode, so it is kept. 55K cold
   draft 73/81 (90.1%) against 43/56 (76.8%). The pre-switch config is `strata-ud-iq1_m.bak-20261111-pre-basalt-mtp.json`;
   MTP is verified, so this is speed only, output unchanged.
+- **A Vietnamese/code draft vocabulary (2026-11-11).** `--mtp-draft-vocab` now names
+  `D:\GitHub\Strata-data\mtp\draft_vocab-vi-en-code.bin`: 65,568 int32 ids (262,272 bytes) converted from dongnhdev's
+  `Qwen3.8-Flash-Next-draft-vocab-vi-en-code-64k.txt` (sha256 `F8B0DC7C…`), ranked over Vietnamese, English and code.
+  The smaller draft head also frees VRAM: expert slots 2498 -> 2559 at the same `vram_free_mib` 1464. Same
+  244,791-token prompt: prefill 831.7 tok/s, decode **51.5 tok/s**, draft 2219/2757 (**80.5%**) against 832.0 / 47.0 /
+  1598/2115 (75.6%) with the shipped English/code subset — **+9.6% decode**. It drops most Japanese/Chinese ids (the
+  old subset had 106,299); the old file stays at `mtp\rt\draft_vocab.bin`. The pre-switch config is
+  `strata-ud-iq1_m.bak-20261111-pre-vi-vocab.json`.
 - **A rule the model reads first (2026-11-11).** `system_prompt` in `strata-q2_0-v144-refusal.json` is prepended as the
   first `system` message of every request, whoever the client is: `Service.with_system_prompt` in `serve/server.py`,
   applied in `encode_prompt`, so webchat, OpenAI, Anthropic, Responses, MCP rounds and token counts all get it. The
