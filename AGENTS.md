@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Version 0.2.14.1 (source merged from upstream v0.2.14.1; the engine binary on this PC is 0.1.60, built from this source into `D:\GitHub\Strata-data\build-v032`; `build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
+Version 0.2.14.1 (source merged from upstream v0.2.14.1; the engine binary on this PC is 0.1.60.1, built from this source into `D:\GitHub\Strata-data\build-v032`; `build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B (upstream removed DeepSeek V4.1-Flash in 0.2.14: the `dsv41` engine, its
 sources and docs are gone; our `strata-unc48l*` configs and the `unc48L` model were already deleted here). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
@@ -211,6 +211,25 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   27.2 / 1,338, chunk 9.2 / 431, arrow fix 5.3 / 199, off-by-one 5.7 / 217 — about 174 s against IQ1_M's 263 s); the
   car page **419.0 s / 24,341 tok** (IQ1_M 350.6 s), parses under `node --check` and the `=>` is fixed. Quality is equal
   on this battery; Q2_0 is slower on the long page, as at 244K.
+- **Merged v0.2.14.1 and built engine 0.1.60.1 (2026-11-16).** `build-v032\strata.exe` from the merged source
+  (`.orca\build-v032.cmd`; the `strata_kq.dll` target is gone - the kernels link statically). Upstream's headline: the
+  prompt experts run on Strata's own CUDA kernels (a build without `-DSTRATA_MMQ=ON`), and a long prompt on one card is
+  cut into equal pieces. Measured here on UD-Q2_0 with MTP and the VI vocab: 244K prompt (236,310 tokens) **906.7 tok/s
+  prefill against 825.6 (+9.8%), 46.8 tok/s decode against 46.9 (same), draft 79.2% against 76.4%**; 55K cold **1006**
+  tok/s (1003); 13K cold 802 (825.6, the run's first long request with a cold expert cache); cache re-read 35 tokens,
+  first token 0.61 s. Expert slots **2422** (2407); `vram_free` 1464. Kept through the merge: `kNativeFF = 2048` and the
+  Q2_K trimmed down rows (moved to pq's `Tr::dot`/`from_float` and `row_size_of(kTQ8_K, ...)` - `ggml_vec_dot_t` and
+  `GGML_TYPE_Q8_K` are gone), the q36 `kv8` FP16 KV path, Service profiles/`switch_model` (`/v1/load`), `strip_cjk`, the
+  webchat guards (`_TOOL_HINTS`, `_ANSWER_CONTENT`, `without_content_tools`, the empty-answer retry), `mcp_note`,
+  `answer_room_reserve`, `system_prompt`, `trusted_origins`. `supported_model()` now drops coder/nvfp4/swift names
+  before the fork's `qwen3.8-*` pattern (upstream's new `test_drafting_file_fit` caught it). Upstream removed DeepSeek
+  V4.1-Flash entirely (184 dsv41 files, the engine, docs and setup block; 242 files deleted, none ours). The vision
+  GPU-elastic block was missing from the Q2_0 config and is restored (`gpu`, `elastic`, `vram_elastic`; backup
+  `strata-ud-q2_0-tuned.json.bak-20261116-pre-vision-gpu`). Gates: undefined names 0; `pytest -k drafting` 1 failure
+  (`test_the_names_the_setups_write`, the same one fails on the pre-merge worktree); node drafting/split-app/ui-r3 all
+  green; `npm test` 1542 pass, 2 EPERM-symlink failures (Windows permission, not the code). Prod: router 8081 and
+  `https://pc-dik-win.tail1b3f7b.ts.net:8443/` answer 200, `Origin: http://127.0.0.1:8081` + `strata_mcp` answered 3/3,
+  an unknown origin gets 403.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
@@ -247,9 +266,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `answer_room_reserve` exist.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
-  Q2_0 with the same bench: 816 / 1003 and 48.6–55.7. A merge must keep or beat these. A number that went down means the
+  Q2_0 with the same bench: 816 / 1003 and 48.6-55.7. A merge must keep or beat these. A number that went down means the
   merge changed behaviour: find the line that did it, fix or revert it, then merge again. Never ship "everything broke".
-- **How to check, in order:** `python -m pytest tests/terminal -k drafting` — the six `coder-iq1_m` failures from the
+  On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **906.7 prefill /
+  46.8 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the IQ1_M band, so
+  the floor stands.
+- **How to check, in order:** `python -m pytest tests/terminal -k drafting` - the six `coder-iq1_m` failures from the
   branch's own DFlash2 work may stay, nothing else; `node --test tests/drafting.test.mjs tests/split-app.test.mjs
   tests/ui-r3.test.mjs` in `apps/host` — all green; full `npm test` in `apps/host` — the four old failures
   (chat-shell #4783, model-directory, ui-do file actions, markdown-crlf) may stay, nothing new; then restart the engine,
