@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
 import sys
 import threading
 import time
@@ -116,6 +117,14 @@ def stdio():
             answer(msg)
 
 
+class _NoLookupServer(ThreadingHTTPServer):
+    """http.server's server_bind also asks socket.getfqdn for the address, which stalled 35 s in every new process on GitHub's macOS runner."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def http_server(port: int = 0) -> ThreadingHTTPServer:
     """Streamable HTTP at /mcp: JSON answers, except tools/call, which answers as an event stream (a progress
     notification first); a session id from initialize is required afterwards."""
@@ -162,7 +171,7 @@ def http_server(port: int = 0) -> ThreadingHTTPServer:
             self.send_response(200)
             self.end_headers()
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+    httpd = _NoLookupServer(("127.0.0.1", port), H)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 
