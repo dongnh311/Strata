@@ -214,10 +214,13 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
 - **Merged v0.2.14.1 and built engine 0.1.60.1 (2026-11-16).** `build-v032\strata.exe` from the merged source
   (`.orca\build-v032.cmd`; the `strata_kq.dll` target is gone - the kernels link statically). Upstream's headline: the
   prompt experts run on Strata's own CUDA kernels (a build without `-DSTRATA_MMQ=ON`), and a long prompt on one card is
-  cut into equal pieces. Measured here on UD-Q2_0 with MTP and the VI vocab: 244K prompt (236,310 tokens) **906.7 tok/s
-  prefill against 825.6 (+9.8%), 46.8 tok/s decode against 46.9 (same), draft 79.2% against 76.4%**; 55K cold **1006**
-  tok/s (1003); 13K cold 802 (825.6, the run's first long request with a cold expert cache); cache re-read 35 tokens,
-  first token 0.61 s. Expert slots **2422** (2407); `vram_free` 1464. Kept through the merge: `kNativeFF = 2048` and the
+  cut into equal pieces. Measured here on UD-Q2_0 with MTP and the VI vocab: 244K prompt (236,310 tokens) **902-907 tok/s
+  prefill against 825.6 (+9.3%), 46.8-49.4 tok/s decode against 46.9, draft 79-88% against 76.4%**; 55K cold 997-1006
+  tok/s (1003), decode 52.6-53.5; 13K cold 802-834 (825.6), decode 44.5-53.7; cache re-read 35 tokens, first token
+  0.59-0.61 s. Expert slots **2422** (2407); `vram_free` 1464. The Q2_0 config now also carries `STRATA_PCIE_BALANCE=1`
+  (244K decode 46.8 -> 49.4 with it, the same direction as the IQ1_M A/B); `STRATA_Q2_BITPLANE` no longer exists in the
+  0.1.60 source and `STRATA_HC_UPMIX=1` is an arch default, so neither is set by hand. Backup
+  `strata-ud-q2_0-tuned.json.bak-20261116-pre-pcie-balance`. Kept through the merge: `kNativeFF = 2048` and the
   Q2_K trimmed down rows (moved to pq's `Tr::dot`/`from_float` and `row_size_of(kTQ8_K, ...)` - `ggml_vec_dot_t` and
   `GGML_TYPE_Q8_K` are gone), the q36 `kv8` FP16 KV path, Service profiles/`switch_model` (`/v1/load`), `strip_cjk`, the
   webchat guards (`_TOOL_HINTS`, `_ANSWER_CONTENT`, `without_content_tools`, the empty-answer retry), `mcp_note`,
@@ -268,9 +271,9 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   770–800 tok/s (13K) and 909–948 (55K), cache first token 0.6–0.7 s, decode 41–48 tok/s, no "below 1024 MiB" line.
   Q2_0 with the same bench: 816 / 1003 and 48.6-55.7. A merge must keep or beat these. A number that went down means the
   merge changed behaviour: find the line that did it, fix or revert it, then merge again. Never ship "everything broke".
-  On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **906.7 prefill /
-  46.8 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the IQ1_M band, so
-  the floor stands.
+  On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **902-907
+  prefill / 46.8-49.4 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the
+  IQ1_M band, so the floor stands.
 - **How to check, in order:** `python -m pytest tests/terminal -k drafting` - the six `coder-iq1_m` failures from the
   branch's own DFlash2 work may stay, nothing else; `node --test tests/drafting.test.mjs tests/split-app.test.mjs
   tests/ui-r3.test.mjs` in `apps/host` — all green; full `npm test` in `apps/host` — the four old failures
