@@ -233,6 +233,11 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   green; `npm test` 1542 pass, 2 EPERM-symlink failures (Windows permission, not the code). Prod: router 8081 and
   `https://pc-dik-win.tail1b3f7b.ts.net:8443/` answer 200, `Origin: http://127.0.0.1:8081` + `strata_mcp` answered 3/3,
   an unknown origin gets 403.
+- **Monitor: an effort tag on every request (2026-11-16).** `serve/server.py` records `effort` in the request history
+  (`off` when thinking is off, else the client's `reasoning_effort`, or `budget N` for an Anthropic thinking budget);
+  `serve/web/app.js` draws it beside the status badge in Recent requests. Qwen3.8-Flash-Next's `chat_template.jinja`
+  supports **xhigh (the default), medium and low**, and maps `high` to `xhigh`, so the webchat's High is the top level
+  and `none` is thinking off; there is no separate high behavior to show.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is

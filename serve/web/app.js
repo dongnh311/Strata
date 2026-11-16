@@ -608,13 +608,15 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
         const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
         const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
         const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="bỏ kiểm duyệt ${r.projection ? "bật" : "tắt"}">${r.projection ? "UNC" : "gốc"}</span>`;
+        // The thinking level the request ran with. Webchat's High is the model card's xhigh (chat_template.jinja maps high -> xhigh), so the title says it.
+        const eff = r.effort ? ` <span class="st-badge" title="thinking level: ${esc(r.effort)}${String(r.effort).toLowerCase() === "high" ? " (the model card's xhigh)" : ""}">${esc(r.effort)}</span>` : "";
         // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
         const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
           (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
         // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
         const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
         const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
-        return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+        return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}${eff}</td><td class="num">${fmt(r.prompt_tokens)}</td>
           <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
           <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
       }).join("");

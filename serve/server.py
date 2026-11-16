@@ -7125,8 +7125,16 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read; #3040
+                            # what the Monitor's Requests row shows: the thinking level the request ran with. Webchat's
+                            # "high" is the model card's xhigh (chat_template.jinja maps high -> xhigh), so the row keeps
+                            # the word the client sent and its tooltip says so.
+                            effort_label = "off" if not thinking else (
+                                str((sampling or {}).get("reasoning_effort") or "").strip().lower()
+                                or (f"budget {thinking.get('budget_tokens')}" if isinstance(thinking, dict)
+                                    and thinking.get("budget_tokens") else "high"))
                             self.history.append({
                                 "id": request_id,
+                                "effort": effort_label,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
