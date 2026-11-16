@@ -471,6 +471,8 @@ def supported_model(model_name: str | None = None, family: str | None = None) ->
     if family is not None:
         return family.lower() in SUPPORTED_FAMILIES
     name = str(model_name or "")
+    if _EXCLUDED_NAME.search(name):          # Coder, NVFP4 and Swift stay out even under a qwen3.8-* fork name
+        return False
     return bool(_SUPPORTED_NAME.match(name) or _FORK_QWEN38_NAME.match(name))
 
 

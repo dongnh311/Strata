@@ -458,7 +458,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         std::memcpy(pad, h, (size_t) f.n_ff * sizeof(float));
         std::memset(pad + f.n_ff, 0, (size_t) (n - f.n_ff) * sizeof(float));
         if (q8k_avx2(f.d_act)) q8k_quant_avx2(pad, dst, n);
-        else traits(f.d_act)->from_float(pad, dst, n);
+        else traits(f.d_act).from_float(pad, dst, n);
         return;
     }
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
@@ -718,12 +718,12 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         return;
     }
     if (f.d_tail) {
-        const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;
-        // trimmed Q2_K: ggml's dot over the whole blocks, then over the half block rebuilt as a whole one whose other
+        const Tr tr = traits(f.d_type);
+        // trimmed Q2_K: the dot over the whole blocks, then over the half block rebuilt as a whole one whose other
         // half has zero scales, mins and codes (it contributes exactly 0, as the padding did against zero activations)
         const int full = (int) (f.n_ff / 256) * 256;
         const size_t full_bytes = (size_t) full / 256 * kQ2KBlock;
-        const size_t q8k = ggml_row_size(GGML_TYPE_Q8_K, 256);
+        const size_t q8k = row_size_of(kTQ8_K, 256);
         alignas(32) uint8_t blk[kQ2KBlock];
         std::memset(blk, 0, sizeof blk);
         for (int r = r0; r < r1; ++r) {
@@ -734,8 +734,8 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
             std::memcpy(blk + 80, tail + 40, 4);    // d, dmin
             for (int t = 0; t < nt; ++t) {
                 float s = 0.f, s2 = 0.f;
-                if (full) dot(full, &s, 0, dr, 0, hq[t], 0, 1);
-                dot(256, &s2, 0, blk, 0, (const uint8_t*) hq[t] + (size_t) full / 256 * q8k, 0, 1);
+                if (full) tr.dot(full, &s, dr, hq[t]);
+                tr.dot(256, &s2, blk, (const uint8_t*) hq[t] + (size_t) full / 256 * q8k);
                 out[t][r] = s + s2;
             }
         }
