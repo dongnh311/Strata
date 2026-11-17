@@ -238,6 +238,30 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `serve/web/app.js` draws it beside the status badge in Recent requests. Qwen3.8-Flash-Next's `chat_template.jinja`
   supports **xhigh (the default), medium and low**, and maps `high` to `xhigh`, so the webchat's High is the top level
   and `none` is thinking off; there is no separate high behavior to show.
+- **Merged v0.2.15 (2026-11-17).** Control 0.1.61, app and Terminal 0.2.15; **every engine package stays 0.1.60** — the
+  release changes no engine code (only three `*_test.cpp` files build on MSVC), so prod keeps
+  `D:\GitHub\Strata-data\build-v032\strata.exe` (0.1.60.1, LastWriteTime 11-16 09:45, unchanged by this merge); the
+  merged `CMakeLists.txt` says 0.1.61 and that is a label only. What it brings: a saved Drafting choice survives a
+  restart (`keep_saved_word` in `strata_cli/launch/runner.py`, reads `launch/<name>.json`), and Off too; on a card
+  measured slower (sm_86) DFlash2 is no longer the stand-in for a chosen MTP (`runnable` in `drafting.decide`:
+  `asked != "dflash2" and auto_mtp_only(...)`); Off fetches no draft layer; the installer puts the engine before setup on
+  a PC with none (pictures stay on); the app never starts llama.cpp's `llama-server`; #6055 a stop without
+  `--shutdown-timeout` answers 503 `server_draining` instead of accepting a request and cutting it at 0 tokens; #5979 a
+  declared boolean written `True`/`False` is the boolean (a string argument is untouched); #5080 the About card's MTP
+  line only when the MTP is the drafter; Monitor energy counts the GPUs that report power (#6012); chat notifications
+  (#5617) and the parked-message fix (#5806); Linux AMD packages bundle `libatomic.so.1`; launch keeps a key that only the
+  Access highlight made off "This computer only" (#5812). Kept through the merge: the `_SLOWER`/`MEASURED_SLOWER` rule,
+  `_FORK_QWEN38_NAME` + `_EXCLUDED_NAME` (upstream's `supported_model` still takes only `_SUPPORTED_NAME`),
+  `kNativeFF = 2048` and the Q2_K trimmed rows, q36 `kv8`, profiles/`/v1/load`, `strip_cjk`, the MCP/webchat guards,
+  `system_prompt`, `trusted_origins`, the Monitor `effort` tag. `_FORK_QWEN38_NAME` now takes only the Unsloth UD sets
+  (`qwen3.8-flash-next-ud-q2_0`) and this PC's old id (`qwen38-ud-iq1_m`), not every `qwen3.8-*`: that clears the last
+  pytest failure. Gates: undefined names 0; `pytest -k drafting` **361 passed, 1 skipped, 0 failed**; node
+  drafting/split-app/ui-r3 48/48; `npm test` only the two EPERM-symlink failures. Prod after restart: 2422 slots,
+  `drafting=mtp`, `vram_free_mib` 1464, `cvec project:4-44`; the tuned config was not rewritten (mtime still 11-16).
+  Bench on the same 0.1.60.1 binary: 13K cold 862, 55K cold 1017, cache re-read 35 tokens / first token 0.58 s, 244K
+  (236,310 tokens) prefill 913-915 / decode 43.1-45.5 with draft 65.6-81.8% (yesterday's 902-907 / 46.8-49.4 at 79-88%
+  is the same bytes: the decode spread follows the draft acceptance). Router 8081 and tailnet 8443 answer 200, trusted
+  origin + `strata_mcp` 2/2, unknown origin 403. Branch and tag `backup-pre-0.2.15` / `backup-pre-0.2.15-tag`.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
@@ -279,12 +303,13 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **902-907
   prefill / 46.8-49.4 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the
   IQ1_M band, so the floor stands.
-- **How to check, in order:** `python -m pytest tests/terminal -k drafting` - the six `coder-iq1_m` failures from the
-  branch's own DFlash2 work may stay, nothing else; `node --test tests/drafting.test.mjs tests/split-app.test.mjs
-  tests/ui-r3.test.mjs` in `apps/host` — all green; full `npm test` in `apps/host` — the four old failures
-  (chat-shell #4783, model-directory, ui-do file actions, markdown-crlf) may stay, nothing new; then restart the engine,
-  run `.venv\Scripts\python.exe .orca\bench-pack-ab.py strata-ud-iq1_m.json`, and send one chat call with
-  `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` — it must answer; an unknown origin must still get a 403.
+- **How to check, in order:** `python -m pytest tests/terminal -k drafting` - **0 failed** is the bar now (2026-11-17:
+  361 passed, 1 skipped; the old `coder-iq1_m` / `test_the_names_the_setups_write` failures are gone); `node --test
+  tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` in `apps/host` - all green (48/48 on
+  2026-11-17); full `npm test` in `apps/host` - only the two EPERM-symlink failures (chat-shell #4783, model-directory;
+  Windows permission, not the code) may stay, nothing new; then restart the engine,
+  run `.venv\Scripts\python.exe .orca\bench-pack-ab.py strata-ud-q2_0-tuned.json`, and send one chat call with
+  `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` - it must answer; an unknown origin must still get a 403.
 - **The rule for the next custom change:** put every local speed or behaviour change in one place (Python's table or the
   run config), let the app read it from Control, and write it here. Never a third copy a merge can silently drop — that
   is exactly how this PC lost its speed on 2026-11-06.
