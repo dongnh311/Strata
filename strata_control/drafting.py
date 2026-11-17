@@ -463,7 +463,9 @@ _SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-
 
 #: The fork (windows-coding) names its Qwen3.8-Flash-Next runs `qwen38-<quant>-...` / `qwen3.8-...` instead of
 #: setup's `qwen3.8-flash-next-<quant>` - same model, same arch; DFlash2 applies to them too.
-_FORK_QWEN38_NAME = re.compile(r"^qwen3\.?8-", re.IGNORECASE)
+#: the fork's own Qwen3.8 names: an Unsloth UD set (`qwen3.8-flash-next-ud-q2_0`) or this PC's old id (`qwen38-ud-iq1_m`).
+#: Not a bare `-unsloth` / `-unslothx-...`, which is no set setup writes (test_drafting.py OTHERS).
+_FORK_QWEN38_NAME = re.compile(r"^qwen3\.?8-(?:flash-next-)?ud-[a-z0-9._-]+$", re.IGNORECASE)
 
 
 def supported_model(model_name: str | None = None, family: str | None = None) -> bool:
