@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Version 0.2.14.1 (source merged from upstream v0.2.14.1; the engine binary on this PC is 0.1.60.1, built from this source into `D:\GitHub\Strata-data\build-v032`; `build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
+Version 0.2.15 (source merged from upstream v0.2.15; Control 0.1.61, the engine packages stay 0.1.60 — the engine binary on this PC is still 0.1.60.1, built from the v0.2.14.1 source into `D:\GitHub\Strata-data\build-v032`; v0.2.15 changes no engine code, only its tests — and `build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B (upstream removed DeepSeek V4.1-Flash in 0.2.14: the `dsv41` engine, its
 sources and docs are gone; our `strata-unc48l*` configs and the `unc48L` model were already deleted here). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
@@ -14,7 +14,7 @@ Strata has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.14-windows-x64-setup.exe`, `Strata-0.2.14-linux-x86_64.AppImage`, `Strata-0.2.14-macos-arm64.dmg`.
+  `Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage`, `Strata-0.2.15-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
