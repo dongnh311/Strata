@@ -310,6 +310,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   19.1 decode / draft 50%**, against Q2_0's 902-915 / 46.8-49.4 at 236K - Edge0 is **4.5x slower to prefill and 2.4x to
   decode** once the KV streams from host RAM; the same 180,062-token needle at depth 50% **passed on both** (Edge0
   205.6 tok/s / 877 s, Q2_0 932.6 / 194 s). So 64K is Edge0's practical mode and Q2_0 stays the daily driver.
+  **Deleted later the same day (owner's call):** `D:\GitHub\Edge0` and `D:\GitHub\Edge0-data` removed (85 GB
+  back: D: free 144 -> 229 GB), the `edge0-local` OpenCode provider removed (config restored from
+  `opencode.json.bak-20261119-pre-edge0`), and Q2_0 back as the only model (2422 slots, `vram_free` 1464, a webchat
+  `Origin` call answered, 8443 answers 200). The report and the small scripts stay at
+  `D:\GitHub\Strata-data\edge0-notes\` (`REPORT.md`, `start-edge0.ps1`, `stop-edge0.ps1`, `bench-edge0.py`,
+  `bench-edge0-256k.py`, `needle.py`, `vi-test.py`).
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
