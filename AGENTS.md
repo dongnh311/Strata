@@ -316,6 +316,18 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `Origin` call answered, 8443 answers 200). The report and the small scripts stay at
   `D:\GitHub\Strata-data\edge0-notes\` (`REPORT.md`, `start-edge0.ps1`, `stop-edge0.ps1`, `bench-edge0.py`,
   `bench-edge0-256k.py`, `needle.py`, `vi-test.py`).
+- **UD-Q2_0 against the Mac's DS4-IQ2 (2026-11-19, measured).** The same 12 short questions (arithmetic, logic,
+  code trace, string reverse), `temperature 0`, `reasoning_effort: high`, ~150-token prompts: **PC 12/12 in 71 s,
+  Mac 12/12 in 94 s**. The PC's only "miss" was `atar ts` for `strata` reversed - the right string with a space in
+  it, a tokenization artifact, so both are 12/12. The same questions at the end of a **55,432-token** page answered
+  **12/12 in 76 s on the PC with `--kv q4_0`**, so 55K and 4-bit KV do not break reasoning. So "the Mac feels
+  smarter" is not a reasoning gap at these lengths; and `ivanfioravanti/Qwen3.8-Flash-Next-DS4-IQ2` is not a 2-bit
+  peer: `lm_head`/dense/shared **Q8_0**, embeddings **BF16**, gate/up **IQ2_XXS** with Unsloth's imatrix, and a
+  **Q4_1 PLE sidecar of 29.8 GiB** - 71.5 GiB in total against UD-Q2_0's 65.7 GiB. It also only runs on
+  `ds4-metal` (its 48 down tensors are **zero-padded 640 -> 768 columns**; commit `5bd8796` or later, "compatibility
+  with other runners is not claimed"), so it cannot load in Strata here at all. Its own author measured the current
+  build **worse** than his previous 2-bit one: NLL 0.290735 -> 0.303570 (+4.4%), top-token 91.33% -> 90.32%,
+  hard-smoke 6/12 -> 5/12. Scripts: `D:\GitHub\Strata-data\ab-quant.py`, `ab-longctx.py`; rows in `ab-quant-*.json`.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
