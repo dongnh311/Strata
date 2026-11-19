@@ -328,6 +328,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   with other runners is not claimed"), so it cannot load in Strata here at all. Its own author measured the current
   build **worse** than his previous 2-bit one: NLL 0.290735 -> 0.303570 (+4.4%), top-token 91.33% -> 90.32%,
   hard-smoke 6/12 -> 5/12. Scripts: `D:\GitHub\Strata-data\ab-quant.py`, `ab-longctx.py`; rows in `ab-quant-*.json`.
+  The same day, the long-file battery (`ab-filefix.py`, a 29 KB page with one `=>` deleted, `max_tokens` 32768,
+  graded by `node --check` and the restored arrow): **PC PASS in 339 s / 24,341 tokens, Mac PASS in 346 s / 16,153
+  tokens**. The PC returned the input byte for byte apart from the fix; the Mac also repaired a mangled em-dash in
+  the title. So the PC is not weaker on a whole-file edit either, and needs more output tokens for the same result.
+  The Mac has to be called with `"stream": true`: Cloudflare cuts a non-streaming origin at 100 s
+  (`edge_deadline_exceeded`), so a 5-minute answer can only come back over SSE.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
