@@ -274,6 +274,22 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   77.8%. The "slower" feeling is not the drafter: the recent rows are 100K-110K-token contexts at
   `reasoning_effort: high` with 378-1402 output tokens a turn (~8-31 s), the engine serves one request at a time, and a
   restart drops the conversation cache (the next turn re-reads the whole context).
+- **Edge0-120B q3k runs on this PC (2026-11-19, experiment only; prod stays Q2_0).** It needs its own engine:
+  `D:\GitHub\Edge0\edge0-strata\build\strata.exe` (0.1.55, built from `EDGE0.md` "Build (Windows, NVIDIA)" with
+  CUDA 13 sm_86 and the pinned ggml `3cf03257`) and `D:\GitHub\Edge0\edge0-infer\build\windows\bin\edge0-infer.exe`
+  (preset `windows`); the model is `D:\GitHub\Edge0-data\Edge0-120B-q3k` (84 GiB, `latent_dense_q8.bin` skipped:
+  Windows defaults to `du=q4`). `edge0-infer` ran with `--strata-dir D:\GitHub\Edge0\edge0-strata
+  --strata-python D:\GitHub\Strata\.venv\Scripts\python.exe --context 32768 --port 8000
+  --strata-arg --vram-reserve-mib --strata-arg 1024` (the Strata venv already has numpy 2.5.3/psutil/snapshot pins).
+  On the 12 GB card - below Edge0's stated 16 GiB minimum - the engine still started: **882 expert slots (979 MiB of
+  VRAM), arena 27,300 MiB (26.66 GiB of experts in RAM), vram_free 936 MiB, spec 6, kv int8, pcie_frac 0.55**.
+  Measured through its OpenAI API: 4K prompt 278.8 tok/s prefill (15.9 s) / 18.0 tok/s decode; 12K 325.5 tok/s
+  (40.6 s) / 22.3 tok/s; cache re-read 7 tokens, first token 0.23 s; a Vietnamese CSV code answer 244 tokens at
+  26.8 tok/s; a declared `get_weather` tool call answered `finish=tool_calls` with `{"city":"Hanoi"}` in 4.4 s. Compare
+  Q2_0 on the same PC: ~1000 tok/s prefill and 47-54 decode, 262K context, vision. `edge0-infer` was stopped and prod
+  restored (`StrataRestart` + `/v1/load`, 2422 slots, vram_free 1464). Q2_0 was unloaded with `POST /v1/unload`
+  (key + trusted Origin) because `serve` has `auto_load`; any request would have reloaded it over Edge0. Keep or delete
+  `D:\GitHub\Edge0` and `D:\GitHub\Edge0-data` (84 GiB) as the owner decides.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
