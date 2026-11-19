@@ -299,6 +299,17 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   reasoning low; backup `opencode.json.bak-20261119-pre-edge0`): `opencode -m edge0-local/edge0_120b` answered, but its
   ~8K-token system prompt costs ~29 s of prefill at ~280 tok/s. Keep Q2_0 as the running default; while Edge0 runs, use
   port 8000, not the 8081 webchat (the 18080 server is unloaded but alive and `auto_load` would try to reload Q2_0).
+  **Strata's tuning on Edge0 (2026-11-19):** `STRATA_PCIE_BALANCE=1`, `STRATA_EXPDEC=1`, `STRATA_PLE_AUTO_MMAP=1`,
+  `--mtp-q4 all`, `--mtp-draft-vocab D:\GitHub\Strata-data\mtp\draft_vocab-vi-en-code.bin`, `--kv-resident 32768`,
+  `--conversation-cache-mib 2048 --slots 2 --min-free-mib 1024`, `--short-read 128`, `--prompt-cache-spread`,
+  `--pool-workers 20` (24 warns: the i7-14700K has 20 physical cores). The template now carries
+  `"log": "D:/GitHub/Edge0-data/edge0-engine.log"`; it prints **`strata mtp: draft head over 65568 tokens (170.1 MiB)`**
+  and the Q4_0 copy at 90.0 MiB/step - the VI vocabulary is applied to Edge0's own MTP. At 64K: **894 slots**,
+  4K 278.4 tok/s prefill / 16.7 decode, 12K 318.0 / 25.2, cache 7 tokens / 0.33 s. At **256K** (`--context 262144`,
+  `--kv-resident 32768`): 819 slots, `vram_free` 676 MiB, a 236,042-token prompt **201.4 tok/s prefill (1,172 s) /
+  19.1 decode / draft 50%**, against Q2_0's 902-915 / 46.8-49.4 at 236K - Edge0 is **4.5x slower to prefill and 2.4x to
+  decode** once the KV streams from host RAM; the same 180,062-token needle at depth 50% **passed on both** (Edge0
+  205.6 tok/s / 877 s, Q2_0 932.6 / 194 s). So 64K is Edge0's practical mode and Q2_0 stays the daily driver.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
