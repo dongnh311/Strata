@@ -290,6 +290,15 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   restored (`StrataRestart` + `/v1/load`, 2422 slots, vram_free 1464). Q2_0 was unloaded with `POST /v1/unload`
   (key + trusted Origin) because `serve` has `auto_load`; any request would have reloaded it over Edge0. Keep or delete
   `D:\GitHub\Edge0` and `D:\GitHub\Edge0-data` (84 GiB) as the owner decides.
+  **Made usable (same day):** `D:\GitHub\Edge0-data\start-edge0.ps1` (unloads Q2_0 with `/v1/unload`, waits for
+  10 GiB free, starts `edge0-infer` detached with `--context 65536 --kv-resident 32768 --mtp-q4 all
+  --vram-reserve-mib 1024`, prints the metrics) and `stop-edge0.ps1` (stops the fork's processes by path, runs
+  `StrataRestart` + `/v1/load`, waits for Q2_0). At 64K: **799 slots**, 936 MiB free, 4K 279.2 tok/s prefill /
+  17.8 decode, 12K 317.1 / 18.6, cache 7 tokens / 0.27 s first token - decode is the same as 32K, so 64K is the default.
+  OpenCode has a provider `edge0-local` (`http://127.0.0.1:8000/v1`, model `edge0_120b`, context 65536, output 8192,
+  reasoning low; backup `opencode.json.bak-20261119-pre-edge0`): `opencode -m edge0-local/edge0_120b` answered, but its
+  ~8K-token system prompt costs ~29 s of prefill at ~280 tok/s. Keep Q2_0 as the running default; while Edge0 runs, use
+  port 8000, not the 8081 webchat (the 18080 server is unloaded but alive and `auto_load` would try to reload Q2_0).
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
