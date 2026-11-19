@@ -262,6 +262,18 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   (236,310 tokens) prefill 913-915 / decode 43.1-45.5 with draft 65.6-81.8% (yesterday's 902-907 / 46.8-49.4 at 79-88%
   is the same bytes: the decode spread follows the draft acceptance). Router 8081 and tailnet 8443 answer 200, trusted
   origin + `strata_mcp` 2/2, unknown origin 403. Branch and tag `backup-pre-0.2.15` / `backup-pre-0.2.15-tag`.
+- **MTP and the VI draft vocabulary verified on prod (2026-11-19).** The engine log (the config's `"log"`) prints
+  `strata mtp: draft layer loaded, 859 MiB of VRAM (experts 675, dense 111)`, `strata mtp: draft head over 65568 tokens
+  (131.3 MiB)` and `strata mtp: --mtp-q4: draft head over 65568 tokens as Q4_0 (90.0 MiB read per step, was 131.3)`.
+  **65,568 ids is `mtp\draft_vocab-vi-en-code.bin`** (262,272 B / 4) - the shipped English/code subset is 106,299 and
+  the whole head 151,936 - so the tuned drafter, its vocabulary and `--mtp-q4 all` are all applied. The config's `"log"`
+  had pointed at `D:\GitHub\Strata\strata-ud-iq1_m.log` (a stale IQ1_M path, which is where this proof was found);
+  since 2026-11-19 it writes `%LOCALAPPDATA%\strata-stack\qwen-engine.log` (backup
+  `strata-ud-q2_0-tuned.json.bak-20261119-pre-engine-log`). Bench that day on 0.1.60.1: 13K cold 813-834, 55K cold
+  997-1014, cache re-read 35 tokens / 0.55-0.64 s, decode 46.7-53.9; a Vietnamese+code prompt (296 in, 320 out) drafted
+  77.8%. The "slower" feeling is not the drafter: the recent rows are 100K-110K-token contexts at
+  `reasoning_effort: high` with 378-1402 output tokens a turn (~8-31 s), the engine serves one request at a time, and a
+  restart drops the conversation cache (the next turn re-reads the whole context).
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
