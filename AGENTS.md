@@ -1,6 +1,9 @@
 # AGENTS.md
 
-Version 0.2.15 (source merged from upstream v0.2.15; Control 0.1.61, the engine packages stay 0.1.60 — the engine binary on this PC is still 0.1.60.1, built from the v0.2.14.1 source into `D:\GitHub\Strata-data\build-v032`; v0.2.15 changes no engine code, only its tests — and `build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
+Version 0.2.16 (source merged from upstream v0.2.16; the app and Terminal are 0.2.16 and Control and the
+engine packages are 0.1.62 — the engine binary on this PC is 0.1.62, built from the merged source into
+`D:\GitHub\Strata-data\build-v033` and running in production; `build-v032` (0.1.60.1), `build-v031` (0.1.59.1)
+and `build-v030` stay for rollback). The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B (upstream removed DeepSeek V4.1-Flash in 0.2.14: the `dsv41` engine, its
 sources and docs are gone; our `strata-unc48l*` configs and the `unc48L` model were already deleted here). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
@@ -12,9 +15,9 @@ existing executable defaults may differ, so inspect the plan and choose the fami
 
 Strata has three parts:
 
-- **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
+- **The app** (`app/desktop`, the Tauri shell; `app/host`, the Node host and the web UI). It is for people who do
   not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage`, `Strata-0.2.15-macos-arm64.dmg`.
+  `Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage`, `Strata-0.2.16-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
@@ -69,12 +72,12 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
 - The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
-  the packages and the update feed: [packaging/README.md](packaging/README.md) and [packaging/UPDATES.md](packaging/UPDATES.md).
+  the packages and the update feed: [packaging/README.md](tools/packaging/README.md) and [packaging/UPDATES.md](tools/packaging/UPDATES.md).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
-- Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
-  tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
-  `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Tests: the Terminal and Control tests are in `terminal/tests/terminal` (`python -m pytest terminal/tests/terminal`). The app's UI
+  tests run with `npm test` in `app/host`. Setup's own tests run without a GPU or downloads:
+  `python tools/test_setup_<name>.py` (for example `terminal/tools/test_setup_amd.py`, `terminal/tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
@@ -334,6 +337,42 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   the title. So the PC is not weaker on a whole-file edit either, and needs more output tokens for the same result.
   The Mac has to be called with `"stream": true`: Cloudflare cuts a non-streaming origin at 100 s
   (`edge_deadline_exceeded`), so a 5-minute answer can only come back over SSE.
+- **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
+  package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
+  `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
+  `engine\third_party\strata-ggml`), and **prod runs it** (the tuned config's `exe`; the pre-switch config is
+  `strata-ud-q2_0-tuned.json.bak-20261120-pre-v033`, and `build-v032`/v031/v030 stay for rollback). The release moved
+  every top-level folder: `src/ include/ metal/ sycl/ CMakeLists.txt` → `engine/`, `serve/ strata.py strata_cli/
+  strata_control/ tests/` → `terminal/`, `apps/` → `app/`, `data/` → `terminal/data/`; git's rename detection kept
+  every local file. The 7 content conflicts (`AGENTS.md`, `app/host/server/native-settings.mjs`,
+  `app/host/src/lib/drafting.ts`, `terminal/serve/server.py`, `terminal/serve/web/app.js`,
+  `terminal/strata_cli/launch/runner.py`, `terminal/strata_control/drafting.py`) and the 5 files added inside moved
+  folders (`serve/dsv41_vision.py`, `serve/test_cjk.py`, `serve/test_dsv41_vision.py`,
+  `serve/test_model_switch.py`, `tests/terminal/test_launch_dsv41_overrides.py`) were resolved by hand.
+  **Upstream split `server.py` into `terminal/serve/server_parts/`**: our local names stayed in
+  `terminal/serve/server.py` and nothing under `server_parts/` imports them back (checked: no circular import), so the
+  guards (`without_content_tools`, `empty_answer_*`, `answer_room_reserve`, `system_prompt_of`) and the local
+  `load_tokenizer`/`model_profiles` (`/v1/load`, Service profiles) are still there, beside `mcp.py`'s `_TOOL_HINTS` and
+  `_ANSWER_CONTENT`. **Prod paths had to move**: the run configs' `D:\GitHub\Strata\data\...` →
+  `D:\GitHub\Strata\terminal\data\...` (`strata-ud-q2_0-tuned.json`, `strata-ud-iq1_m.json`,
+  `strata-q2_0-v144-refusal.json`; the `.bak-*` keep the old path as the record), the router (`.orca/local-stack` and
+  the deployed `%LOCALAPPDATA%\strata-stack\model-router.py`) now resolves `terminal/serve/server.py` with a fallback to
+  `serve/server.py`, and `run-q2_0.bat` + `AI-Gateway-MLX\scripts\windows\run-strata-config.cmd` name the new path.
+  This clone is now `core.autocrlf=false` — v0.2.16's tests match `\n`, and CRLF failed `shell-languages`,
+  `agent-mcp-model-timeout` and `monitor-gpu-load-hint`; `app/desktop/src-tauri/src/shell.rs`,
+  `terminal/serve/web/app.js` and `app/host/server/index.mjs` were converted to LF. Text this fork adds must be
+  translated or the locale gates fail: `tool.rejected` was added to the 9 web catalogs and the draftingHint's card
+  clause to the 9 `guic-*.json` (fr with its NBSPs). Gates: undefined names 0; `pytest terminal/tests/terminal -k
+  drafting` **409 passed, 1 skipped, 0 failed**; node drafting/split-app/ui-r3 **48/48**; `npm test` **2022 pass, 2
+  fail** (only the two old EPERM-symlink ones: chat-shell #4783, model-directory). Bench on build-v033 with the tuned
+  config: 13K cold **849** tok/s (floor 802), cache **35 tokens read, first token 0.49 s**, 55K cold **1008** (floor
+  1006), decode 45.3 (13K) / 49.9 (cache) / 50.8 (follow) / 54.5 (55K); 244K prompt (234,300 tokens) **901 and 879**
+  tok/s prefill against 902-915 (the same bytes within the run spread), decode **46.2** against 43.1-49.4 — the first
+  cold run gave 34.6, a cold-start outlier that the repeat did not reproduce; a warm-cache rerun gave 987 / 52.2 with
+  21,279 tokens reused. Prod after the switch: **2422 slots, `drafting=mtp`, `kv q4_0`, `vram_free_mib` 1464, `cvec
+  project:4-44`**, the webchat `Origin: http://127.0.0.1:8081` + `"strata_mcp": true` answered 200 (`finish=stop`), an
+  unknown origin got 403, and the router 8081 and `https://pc-dik-win.tail1b3f7b.ts.net:8443/v1/models` both answered
+  200 with `qwen3.8-flash-next-ud-q2_0`. Branch and tag `backup-pre-0.2.16` / `backup-pre-0.2.16-tag`.
 - **The "unc" switch is the refusal-direction vector, not an adapter (2026-11-12).** The Chat drawer's "Bỏ kiểm duyệt
   (Uncensored)" toggle is `experimental_speed_projection` (`--control-vector-scaled ...experimental-speed-projection.gguf`),
   a control vector on layers 4-44 - there is no LoRA/adapter code in `serve/server.py`, and no "unc" adapter exists. It is
@@ -365,7 +404,7 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   failure only appears at runtime. That is how `63cf42a5` ("Merge v0.2.10", 2026-11-03) removed `def mcp_note`
   from `serve/server.py` while `anthropic_events` still called it — `/v1/messages` with server-side MCP raised
   `NameError` until `ce02ff67`. `.orca/undefined_names.py` lists calls to names bound nowhere in the module; it
-  accepts directories (`python .orca/undefined_names.py serve strata_control strata_cli`) and must print
+  accepts directories (`python .orca/undefined_names.py terminal/serve terminal/strata_control terminal/strata_cli`) and must print
   `0 suspicious call(s)` before a merge is done. After a merge, also check `def mcp_note` and
   `answer_room_reserve` exist.
 - **The numbers are the floor.** Measured 2026-11-06 with `.orca/bench-pack-ab.py` on this PC: UD-IQ1_M prefill
@@ -375,10 +414,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **902-907
   prefill / 46.8-49.4 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the
   IQ1_M band, so the floor stands.
-- **How to check, in order:** `python -m pytest tests/terminal -k drafting` - **0 failed** is the bar now (2026-11-17:
+- **How to check, in order:** `python -m pytest terminal/tests/terminal -k drafting` - **0 failed** is the bar now (2026-11-17:
   361 passed, 1 skipped; the old `coder-iq1_m` / `test_the_names_the_setups_write` failures are gone); `node --test
-  tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` in `apps/host` - all green (48/48 on
-  2026-11-17); full `npm test` in `apps/host` - only the two EPERM-symlink failures (chat-shell #4783, model-directory;
+  tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` in `app/host` - all green (48/48 on
+  2026-11-17); full `npm test` in `app/host` - only the two EPERM-symlink failures (chat-shell #4783, model-directory;
   Windows permission, not the code) may stay, nothing new; then restart the engine,
   run `.venv\Scripts\python.exe .orca\bench-pack-ab.py strata-ud-q2_0-tuned.json`, and send one chat call with
   `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` - it must answer; an unknown origin must still get a 403.
@@ -411,13 +450,13 @@ A merge is done only when every box is checked. Skip nothing because "it probabl
 
 ### After merging — gates, in this order
 
-- [ ] `python .orca/undefined_names.py serve strata_control strata_cli` — 0 suspicious calls. A merge that keeps a
+- [ ] `python .orca/undefined_names.py terminal/serve terminal/strata_control terminal/strata_cli` — 0 suspicious calls. A merge that keeps a
       call and drops its `def` compiles clean and only fails at runtime: `63cf42a5` (v0.2.10) dropped `mcp_note`
       and `/v1/messages` + server-side MCP raised `NameError`.
-- [ ] `python -m pytest tests/terminal -k drafting` — only the six known `coder-iq1_m` failures may remain.
-- [ ] `cd apps/host && node --test tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` — all green.
-- [ ] `cd apps/host && npm test` — only the four known old failures (chat-shell #4783, model-directory,
-      ui-do file actions, markdown-crlf); nothing new.
+- [ ] `python -m pytest terminal/tests/terminal -k drafting` — 0 failed is the bar (2026-11-20: 409 passed, 1 skipped).
+- [ ] `cd app/host && node --test tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` — all green.
+- [ ] `cd app/host && npm test` — only the two EPERM-symlink failures (chat-shell #4783, model-directory);
+      nothing new.
 - [ ] Re-read the tuned run configs — a merge or a Models-screen Save can write old numbers back:
       `strata-ud-iq1_m.json` keeps `drafting:"mtp"`, `--vram-reserve-mib 1472`, conversation cache
       10078/6/8000/1536, `expert_profile_save`, `trusted_origins`, `allowed_hosts`, and `env`
@@ -451,7 +490,7 @@ A merge is done only when every box is checked. Skip nothing because "it probabl
 
 ## Contributing a change or report
 
-The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
+The rules are in **[CONTRIBUTING.md](.github/CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
 follow it whether a person or an agent writes the text. The short version:
 
 - Start every issue and pull request title with its area: `[Engine]`, `[GUI]`, `[TUI]`, `[Benchmark]`, `[Docs]` or

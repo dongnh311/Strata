@@ -25,7 +25,11 @@ from pathlib import Path
 
 HOME = Path(r"D:\GitHub\Strata")
 STACK = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\ADMIN\AppData\Local")) / "strata-stack"
-WEB_DIR = HOME / "serve" / "web"
+# 0.2.16 moved serve/ under terminal/: keep one rule for the server and the page it serves.
+SERVE_DIR = HOME / "terminal" / "serve"
+if not SERVE_DIR.is_dir():
+    SERVE_DIR = HOME / "serve"                   # the layout before 0.2.16
+WEB_DIR = SERVE_DIR / "web"
 LOG = STACK / "model-router.log"
 VENV_PY = HOME / ".venv" / "Scripts" / "python.exe"
 QWEN_CFG = HOME / "strata-ud-q2_0-tuned.json"
@@ -152,7 +156,7 @@ def kill_port(port):
 
 def start_qwen():
     out = open(STACK / "qwen-serve.log", "ab")
-    subprocess.Popen([str(VENV_PY), str(HOME / "serve" / "server.py"), "--engine", "strata",
+    subprocess.Popen([str(VENV_PY), str(SERVE_DIR / "server.py"), "--engine", "strata",
                       "--config", str(QWEN_CFG), "--port", str(QWEN_PORT)],
                      cwd=str(HOME), stdin=subprocess.DEVNULL, stdout=out, stderr=out,
                      creationflags=NO_WINDOW)
