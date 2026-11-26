@@ -3083,8 +3083,8 @@ class JsonOutputParser(OutputParser):
     not the server's tool_call_recovery is on.  Everything else (reasoning, code fences, declared-tool rules) is OutputParser's."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
-        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=True,
+                 aliases: dict[str, str] | None = None, recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, aliases=aliases, recover=True,
                          declared_only=declared_only, deferred=deferred)
 
 
@@ -3094,8 +3094,8 @@ class Hy4OutputParser(OutputParser):
     OutputParser's.  A call is in the declared-tool form once translated, so the recovery that reads a drifted opener is on, as for the JSON form."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
-        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=recover,
+                 aliases: dict[str, str] | None = None, recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, aliases=aliases, recover=recover,
                          declared_only=declared_only, deferred=deferred)
         from serve import hy4_dialect
         self._dialect = hy4_dialect.Hy4Dialect()
@@ -3116,8 +3116,8 @@ class InklingOutputParser(JsonOutputParser):
     so `reasoning_effort=none`, interleaved thinking, and direct tool calls all parse cleanly."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
-        super().__init__(thinking=False, tools=tools, stream_tools=stream_tools, recover=True,
+                 aliases: dict[str, str] | None = None, recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=False, tools=tools, stream_tools=stream_tools, aliases=aliases, recover=True,
                          declared_only=declared_only, deferred=deferred)
         from serve import inkling_dialect
         self._dialect = inkling_dialect.InklingDialect()

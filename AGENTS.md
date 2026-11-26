@@ -353,7 +353,10 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `Fmt<10>/<11>`, so the fork's duplicate definitions were dropped; the Q2_K trimmed-row code (`q2k_dot`,
   `row_dot_q2k_trim`, `Q2K_HALF_BYTES`, and `trimmed_row_bytes` in `gguf_reader.hpp`, restored after the
   conflict) stays, and `prefill.cpp` keeps `iq_dequant_rows_f16` with upstream's `gu_type == kNvfp4` guard;
-  `kNativeFF = 2048` unchanged. `has_vision()` now includes the fork's `native_vision` (dsv41). Two SYCL-mount
+  `kNativeFF = 2048` unchanged. `has_vision()` now includes the fork's `native_vision` (dsv41). The Inkling and Hy4
+  parsers take the fork's `aliases` keyword too: the merge passed it from `_run` to every parser class, so the launch's
+  `max_tokens: 1` readiness probe got a 400 (`InklingOutputParser.__init__() unexpected keyword argument 'aliases'`);
+  fixed in `frontend.py` (`JsonOutputParser`, `Hy4OutputParser`, `InklingOutputParser`). Two SYCL-mount
   tests skip on this PC (they assume no `Strata-data` beside the checkout), with the reason in the test.
   **`STRATA_PF_SMALL=0` is in the tuned config**: 0.2.22's small-card rule fired (expert cache 2337 slots, default
   chunk 7936 < 8192) and picked the small-card prompt path, which cost 5% at 13K and 4% at 55K; the numbers below
@@ -366,6 +369,19 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   after the switch: **2337 slots, `drafting=mtp`, `kv q4_0`, `vram_free_mib` 1542, `cvec project:4-44`**, and the
   log's `draft head over 65568 tokens` and `--mtp-q4` Q4_0. Branch and tag `backup-pre-0.2.22` /
   `backup-pre-0.2.22-tag`.
+- **Inkling-2-Mini SQ-10 abliterated on this PC (2026-11-26).** `SC117/Inkling-2-Mini-abliterated-Strata` SQ-10 +
+  Vision (11.14 GB, 146 s) in `D:\GitHub\Strata-data\models\Inkling-2-Mini-abliterated` (pack hash matches the repo);
+  `strata launch --model-path ... --model sq-10 --family inkling-2-mini --context 32k --vision on --port 8000` installs
+  `strata-inkling` 0.1.69 (419 MB) and serves it. **The Inkling engine has no control-vector code**, so the Qwen
+  `experimental-speed-projection` vector cannot be applied to it; the abliterated pack is the unc equivalent (rank-1
+  orthogonal ablation of `attn.wo_ud`, layers 4..23, 20 tensors, scales 4.0/2.5; the author's 10-prompt audit R=0;
+  SQ-10 agrees with the original on 92.35% of next tokens). On the RTX 3060 (SQ-10, 32K, `--kv fp8`, KV auto-offloaded
+  to host, DSpark on): ~25 s to load, 11.2 GiB VRAM, 1.03 GiB host expert arena + 1.0 GiB host KV; prefill 509 tok/s
+  at 2,053 tokens and 696-764 at 8-32K; decode 41.9 tok/s at 2K, 19.6 at 8K, 11.6 at 16K, 9.3 at 24K, 7.2 at 32K (the
+  KV reads come from host RAM); a 16K repeat reused 16,213 tokens, first token 0.37 s; tool call
+  `get_weather({"city":"Hanoi"})` and vision ("42, circle") correct; three harmless fiction/rudeness probes all answered.
+  `--kv-offload off` at 16K makes the engine shrink the context to 4,864 to keep KV in VRAM. Bench scripts:
+  `.orca/bench-inkling.py`, `.orca/bench-inkling-ladder.py`, `.orca/bench-inkling-port.py`.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
