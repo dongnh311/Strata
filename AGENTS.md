@@ -409,8 +409,19 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   5-23% faster, the long row the widest); cache re-read 35 tokens / 0.58 s (UD-Q2_0 0.59). The ~199K needle passed
   (`ORANGE-7421`, the 198,783-token prefix fully reused on the repeat). Vision reads the test image ("42, a circle").
   The six-question battery: **IQ2_XS 5/6** (Wednesday + 100 days -> "Saturday"), **UD-Q2_0 6/6** ("Friday"); every other
-  answer identical. Prod stays UD-Q2_0 until the owner decides; the IQ2_XS config is staged and its 8080 server is left
-  unloaded (auto-load on a request).
+  answer identical. **The deep battery (2026-11-26, both on 0.1.69)** firmed that up: the 10-task code suite (hidden
+  pytest per task) **10/10 on both**; the 12-question set **12/12 UD-Q2_0, 11/12 IQ2_XS** (the same Wednesday + 100 ->
+  "Saturday", reproducible); the `get_weather` tool call correct on both; the 128K needle at **90% depth** passed on
+  both (977 tok/s prefill / 42.3 decode UD-Q2_0, 942 / 50.6 IQ2_XS). The cold ladder (random salt, 4K-128K) gives UD
+  the prefill row (719/1020/1019/992/1001/975 tok/s against IQ2's 607/854/917/928/963/926, so UD +5-19%) and a mixed
+  decode row (IQ2 ahead at 8K-32K and 128K, UD at 4K/64K; the draft acceptance moves that row more than the quant).
+  The 29 KB page fix: both returned **24,344 tokens** and pass `node --check` with the arrow restored, but **IQ2_XS
+  broke a correct line** it was not asked to touch — `ctx.arc(x, y, r, 0, Math.PI * 2)` (a full circle) became
+  `ctx.arc(x, y, r, 0, 0, Math.PI * 2)`, a zero-length arc, so its particles would not draw; UD-Q2_0 rewrote the same
+  function as an arrow with the same 5-argument arc (functionally identical), and both left the mojibake title as it
+  was. Verdict: **UD-Q2_0 stays prod** (careful edits and prefill); IQ2_XS is the faster long-generation alternative,
+  staged at `terminal\strata-iq2_xs-tuned.json`, its 8080 server unloaded (auto-load on a request). Scripts:
+  `.orca/codebench.py` + `qa12.py` + `toolcall.py` + `needle-depth.py` + `ladder.py` + `filefix.py`.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
