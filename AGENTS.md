@@ -399,29 +399,15 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `-fast` profile (KV in VRAM) 55.7-57.6 tok/s at 2.3K; it was still 4x slower than Qwen at long context because the
   loader caps the experts at 7.03 GiB (383 host + 6 SSD, CPU lane 24 ms/token) and the K/V lives in host RAM — a
   property of the 12 GB card and engine 0.1.69, not of the config. Qwen UD-Q2_0 stays the daily driver.
-- **ISTA-DASLab IQ2_XS tried against UD-Q2_0 (2026-11-26).** `strata launch --model IQ2_XS --context 256k --vision gpu
-  --drafting mtp` downloaded and prepared the ISTA pack (`models\IQ2_XS`, 63.4 GB, 2 shards; `packs\iq2_xs`), and its own
-  server ran on 8080 with engine 0.1.57; the same pack was then served by `build-v034` (0.1.69) with the tuned Qwen
-  config's flags (`--kv q4_0`, `--kv-resident 32768`, MTP `basalt-rt` + the VI draft vocab, `STRATA_PF_SMALL=0`,
-  `STRATA_PCIE_BALANCE=1`): `terminal\strata-iq2_xs-tuned.json`. Measured with `.orca/bench-pack-ab.py` (13K/55K) and
-  `.orca/bench-244k-one.py` (~199K): **3,041 expert slots against UD-Q2_0's 2,336**; prefill **812 / 953 / 880 tok/s
-  against 854 / 1,013 / 906** (IQ2_XS 3-6% slower); decode **43.5 / 47.3 / 49.2 against 42.1 / 43.0 / 40.0** (IQ2_XS
-  5-23% faster, the long row the widest); cache re-read 35 tokens / 0.58 s (UD-Q2_0 0.59). The ~199K needle passed
-  (`ORANGE-7421`, the 198,783-token prefix fully reused on the repeat). Vision reads the test image ("42, a circle").
-  The six-question battery: **IQ2_XS 5/6** (Wednesday + 100 days -> "Saturday"), **UD-Q2_0 6/6** ("Friday"); every other
-  answer identical. **The deep battery (2026-11-26, both on 0.1.69)** firmed that up: the 10-task code suite (hidden
-  pytest per task) **10/10 on both**; the 12-question set **12/12 UD-Q2_0, 11/12 IQ2_XS** (the same Wednesday + 100 ->
-  "Saturday", reproducible); the `get_weather` tool call correct on both; the 128K needle at **90% depth** passed on
-  both (977 tok/s prefill / 42.3 decode UD-Q2_0, 942 / 50.6 IQ2_XS). The cold ladder (random salt, 4K-128K) gives UD
-  the prefill row (719/1020/1019/992/1001/975 tok/s against IQ2's 607/854/917/928/963/926, so UD +5-19%) and a mixed
-  decode row (IQ2 ahead at 8K-32K and 128K, UD at 4K/64K; the draft acceptance moves that row more than the quant).
-  The 29 KB page fix: both returned **24,344 tokens** and pass `node --check` with the arrow restored, but **IQ2_XS
-  broke a correct line** it was not asked to touch — `ctx.arc(x, y, r, 0, Math.PI * 2)` (a full circle) became
-  `ctx.arc(x, y, r, 0, 0, Math.PI * 2)`, a zero-length arc, so its particles would not draw; UD-Q2_0 rewrote the same
-  function as an arrow with the same 5-argument arc (functionally identical), and both left the mojibake title as it
-  was. Verdict: **UD-Q2_0 stays prod** (careful edits and prefill); IQ2_XS is the faster long-generation alternative,
-  staged at `terminal\strata-iq2_xs-tuned.json`, its 8080 server unloaded (auto-load on a request). Scripts:
-  `.orca/codebench.py` + `qa12.py` + `toolcall.py` + `needle-depth.py` + `ladder.py` + `filefix.py`.
+- **ISTA-DASLab IQ2_XS tried, measured, and deleted (2026-11-26).** The pack was downloaded and served on 0.1.69 with
+  the prod flags; the full report with every number, the retry recipe and the exact commands is
+  **`.orca/iq2-xs-report.md`**. Summary: 3,041 expert slots against 2,336, prefill 5-19% slower on the 4K-128K ladder,
+  long generation ~25-30% faster (the same 24,344-token page fix: 335 s against 458 s), the 10-task code suite 10/10 on
+  both, the 128K needle at 90% depth on both, but the 12-question set 11/12 (Wednesday + 100 -> "Saturday",
+  reproducible) and an unforced edit regression (`ctx.arc(x,y,r,0,Math.PI*2)` -> `ctx.arc(x,y,r,0,0,Math.PI*2)`, a
+  zero-length arc). **UD-Q2_0 stays prod**; the 63.4 GB pack, `packs\iq2_xs`, the staged config, the launcher files
+  and the 8080 server were removed the same day (D: back to 228.4 GB). To retry: read the report first; re-measure the
+  engine's i-quant kernels on a new build before believing the trade again.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
