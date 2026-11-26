@@ -381,7 +381,11 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   KV reads come from host RAM); a 16K repeat reused 16,213 tokens, first token 0.37 s; tool call
   `get_weather({"city":"Hanoi"})` and vision ("42, circle") correct; three harmless fiction/rudeness probes all answered.
   `--kv-offload off` at 16K makes the engine shrink the context to 4,864 to keep KV in VRAM. Bench scripts:
-  `.orca/bench-inkling.py`, `.orca/bench-inkling-ladder.py`, `.orca/bench-inkling-port.py`.
+  `.orca/bench-inkling.py`, `.orca/bench-inkling-ladder.py`, `.orca/bench-inkling-port.py`. The launch also adopted the
+  old root run configs and launchers into `terminal/` (every `strata-*.json` and `run-*.bat` moved at 10:01), so the
+  router now prefers `terminal/strata-ud-q2_0-tuned.json` and falls back to the root copy, and copies of the four
+  active configs were put back in the root for the old scripts; `terminal/run-q2_0.bat` pointed at `terminal\.venv`
+  (no such folder) and was fixed to the repo's `.venv`.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored

@@ -32,7 +32,9 @@ if not SERVE_DIR.is_dir():
 WEB_DIR = SERVE_DIR / "web"
 LOG = STACK / "model-router.log"
 VENV_PY = HOME / ".venv" / "Scripts" / "python.exe"
-QWEN_CFG = HOME / "strata-ud-q2_0-tuned.json"
+QWEN_CFG = HOME / "terminal" / "strata-ud-q2_0-tuned.json"
+if not QWEN_CFG.is_file():                       # the layout before the 0.2.22 adoption moved it into terminal/
+    QWEN_CFG = HOME / "strata-ud-q2_0-tuned.json"
 QWEN_PORT = 18080
 QWEN_ID = "qwen3.8-flash-next-ud-q2_0"
 PORT = int(os.environ.get("MODEL_ROUTER_PORT", "8081"))
