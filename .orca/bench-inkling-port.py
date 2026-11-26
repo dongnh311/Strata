@@ -7,6 +7,7 @@ import urllib.request
 PORT = int(sys.argv[1])
 REPS = [int(x) for x in sys.argv[2:]] or [17, 68]
 BASE = f"http://127.0.0.1:{PORT}"
+KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-ud-q2_0-tuned.json", encoding="utf-8")).get("api_key")
 PARA = ("The harbor town woke slowly that morning, gulls tracing circles over the wet "
         "roofs while the fishing boats knocked gently against the quay. Salt air moved "
         "through the narrow streets, and the market women unfolded their canvases one by "
@@ -22,10 +23,10 @@ for reps in REPS:
                        "max_tokens": 100, "temperature": 0, "stream": False}).encode()
     t0 = time.time()
     req = urllib.request.Request(BASE + "/v1/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + KEY})
     d = json.loads(urllib.request.urlopen(req, timeout=3600).read())
     wall = time.time() - t0
-    m = json.loads(urllib.request.urlopen(BASE + "/metrics", timeout=30).read())
+    m = json.loads(urllib.request.urlopen(urllib.request.Request(BASE + "/metrics", headers={"Authorization": "Bearer " + KEY}), timeout=30).read())
     x = m["requests"][0]
     tok = d["usage"]["prompt_tokens"]
     drafts = f"{x.get('drafts_accepted')}/{x.get('drafts_offered')}"

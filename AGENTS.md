@@ -386,6 +386,26 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   router now prefers `terminal/strata-ud-q2_0-tuned.json` and falls back to the root copy, and copies of the four
   active configs were put back in the root for the old scripts; `terminal/run-q2_0.bat` pointed at `terminal\.venv`
   (no such folder) and was fixed to the repo's `.venv`.
+- **Inkling stock by default, unc as a profile, and the router picks by model name (2026-11-26).** The stock SQ-10 pack
+  (`strata-engine/Inkling-2-Mini-Strata`, 11.13 GB, hash checked) is the default; the abliterated pack is a second
+  profile, never loaded unless a request names `inkling-2-mini-sq-10-unc`. The run configs
+  `terminal/strata-inkling-sq10-{stock,unc,fast}.json` clone every server-level key of the tuned Qwen config (API key,
+  `system_prompt`, `trusted_origins`, `allowed_hosts`, `mcp`/`mcp_servers`, `strip_cjk`, `reasoning_*`,
+  `tool_call_recovery`, `anthropic_thinking`, `min_free_vram_mib`, `api_monitor`, `before_load`, `env_to_user`) and change
+  only the model-level keys (engine, args, tokenizer, model_name, log); `effort_position: "end"` is dropped because the
+  Inkling engine 0.1.69 has no `--tail-role-token` (the Qwen config keeps it). `fit_max_tokens: true` is set on all three
+  (a client's 8K output cap would otherwise overflow the 32K/4.9K contexts). The model-router (`.orca/local-stack`, v1.3)
+  now has two backends: Qwen 18080 and Inkling 8000. A request's `model` chooses one; the other is unloaded
+  (`/v1/unload`) first, so only one model holds the 12 GB card. `/v1/models` lists `qwen3.8-flash-next-ud-q2_0`,
+  `inkling-2-mini-sq-10`, `inkling-2-mini-sq-10-unc`, `inkling-2-mini-sq-10-fast`; the stock and unc are profiles of the
+  same Inkling server, so switching between them is 4-15 s, while a Qwen<->Inkling switch is 14-28 s (the cold engine
+  load). Measured through 8081: stock 14-17 s first, unc 27 s (vision included), stock again 8-22 s, Qwen 27-28 s.
+  `profile_state` (server.py) now calls `engine_args(cfg, exe)`: without `exe` the Inkling probe was skipped and every
+  profile switch silently dropped `--vision` (images off, NO_IMAGES_REPLY); fixed and verified with the same picture on
+  stock and unc ("42; a circle"). The `fast` profile is the stock pack at 4,864 cells with `--kv-offload off` (K/V in
+  VRAM): **56 tok/s at 3,809 tokens**, 33.8-50 at 2K, against the 32K host-KV stock at 39 (2K), 24.7 (8K), 15 (16K),
+  10.3 (32K). The abliterated pack has no control vector (the engine has no steering code); it is the unc option, never
+  the default.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored

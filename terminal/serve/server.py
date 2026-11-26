@@ -5474,7 +5474,7 @@ class Service:
         try:
             effort_end = effort_end_args(cfg, exe, tok) or []
             silence = engine_silence_s(cfg)
-            args = engine_args(cfg) + effort_end
+            args = engine_args(cfg, exe) + effort_end
             sampling = sampling_defaults_from_config(cfg)
             effort = (clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}).get("reasoning_effort")
                       if cfg.get("reasoning_effort") is not None else None)
