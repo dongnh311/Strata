@@ -402,10 +402,22 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   load). Measured through 8081: stock 14-17 s first, unc 27 s (vision included), stock again 8-22 s, Qwen 27-28 s.
   `profile_state` (server.py) now calls `engine_args(cfg, exe)`: without `exe` the Inkling probe was skipped and every
   profile switch silently dropped `--vision` (images off, NO_IMAGES_REPLY); fixed and verified with the same picture on
-  stock and unc ("42; a circle"). The `fast` profile is the stock pack at 4,864 cells with `--kv-offload off` (K/V in
-  VRAM): **56 tok/s at 3,809 tokens**, 33.8-50 at 2K, against the 32K host-KV stock at 39 (2K), 24.7 (8K), 15 (16K),
-  10.3 (32K). The abliterated pack has no control vector (the engine has no steering code); it is the unc option, never
-  the default.
+  stock and unc ("42; a circle"). **The stock and unc profiles are now at the model's 1M context** (`--max-context
+  1048576`, `--kv k8v4`; the engine maps the K/V in host RAM: 12,800 MiB at k8v4 against 16,896 at fp8). Measured cold
+  through 8081 with `.orca/bench-inkling-ab.py` (a random salt in each prompt, so no prefix cache): stock **41.8 tok/s
+  at 2,270 / 31.3 at 8,338 / 11.7 at 32,972** (prefill 569 / 791 / 710 tok/s) against fp8's 40.4 / 26.8 / 9.5 —
+  **k8v4 is +17% at 8K and +23% at 32K** (the narrower host K/V means less PCIe traffic per token); 2K is inside the
+  run-to-run spread (37.8-47.3 fp8, 43.5-50.0 k8v4). The 32K needle passes on both (ORANGE-7421, 9.1 fp8 / 11.1
+  k8v4 decode). Six fixed questions (arithmetic, logic, reverse, weekday, a Python duration parser, a Vietnamese answer)
+  give the same answers on both — k8v4 is kept. What did NOT help: `--draft-beam 4` (the engine default; 35.1 / 25.2 /
+  9.3 against beam 1's 40.4 / 26.8 / 9.5), `--chunk 1024` (no change, and the engine still runs max_batch 512),
+  `--vram-experts-gb 8.5` (the loader caps at **7.03 GiB**: its reserve for runner+K/V+DSpark+WDDM is ~2 GiB, so 383
+  experts stay in host RAM and 6 on SSD), `--threads 20` on the cold-expert lane (24.3 against 24.9 ms/token — inside
+  noise). The `fast` profile is the stock pack with `--kv-offload off` (K/V in VRAM): the engine's auto-sizer lands on
+  **2,304 cells** (1.51 GiB free VRAM after the experts, the runner's reserve takes 800 MiB + WDDM/2), **55.7-57.6
+  tok/s at 2-3.8K**, against the 1M host-KV stock at ~42 (2K), 31 (8K), 11.7 (32K); its context is pinned to 2,304 so
+  the number the page shows is real. The abliterated pack has no control vector (the engine has no steering code); it is
+  the unc option, never the default.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
