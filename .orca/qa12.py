@@ -8,7 +8,7 @@ PORT = int(sys.argv[1])
 MODEL = sys.argv[2]
 LABEL = sys.argv[3] if len(sys.argv) > 3 else "run"
 BASE = f"http://127.0.0.1:{PORT}"
-KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-iq2_xs-tuned.json", encoding="utf-8")).get("api_key")
+KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-ud-q2_0-tuned.json", encoding="utf-8")).get("api_key")
 QS = [
     ("What is 17 * 23? Answer with the number only.", "num", 391),
     ("A farmer has 17 sheep. All but 9 die. How many are left? Answer with the number only.", "num", 9),

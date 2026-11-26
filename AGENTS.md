@@ -419,6 +419,20 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `STRATA_SPEC_ADAPT_SM86=1` +0-2% - both inside the **+-5% run-to-run spread** that draft acceptance and the expert hit
   rate create. Nothing was kept; the tuned config stands. The old 512K sweep configs (`strata-sweep-*`) are a different
   (yarn 512K) experiment, not a 262K tuning win.
+- **Gyro-S v2 tried against UD-Q2_0 and deleted (2026-11-26).** The full report with every table and the retry recipe
+  is **`.orca/gyro-s-v2-report.md`**. v2 (2026-11-24) is a quality-only update of the same file/size/tensor types: KLD
+  0.331 against v1's 0.401 (-18%), tool calls -27%, code -14%, and no speed change. On this PC it loaded **24.02 GiB**
+  (UD-Q2_0 ~35), held **3,723 expert slots** (2,336) with **12.1 GB RAM free**, and prefilled +4..10% faster, but it
+  **decoded 31-44% slower** at every length (13K **24.1** against 34.9-35.3, 55K **26.4** against 42.7-43.9, 167K
+  **28.6** against 51.4): the TQ1_0 expert kernels cost more on sm_86 than the bigger cache gains back. Quality:
+  HumanEval-60 **55/60 against UD-Q2_0's 58/60** (both fail `decode_shift` + `closest_integer`; Gyro also
+  `sort_array`, `specialFilter`, `generate_integers`), 12 questions **9/12 against 12/12** (Wednesday+100 -> Saturday,
+  bat-and-ball -> 0.1, clock -> 37.5), codebench 10/10 both, tool call / 128K needle at 90% / vision pass on both; the
+  29 KB page fix passed on both and was the cleanest of the three models (only the missing arrow). `terminal/setup.py`
+  still pins the Gyro repo at `1ada0842` (v1), so `strata launch --model Gyro-S` downloads v1; `.orca/gyro-s-dl.py`
+  resolves `/main` and got v2 (SHA `1a8267c2`, checked). The 58.5 GB model, `packs\gyro-s`, the staged config, the
+  copied profiles and the 18082 server were removed the same day (D: 228.6 GB); UD-Q2_0 was warmed again (2,336 slots,
+  MTP, 1,540 MiB VRAM free).
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored

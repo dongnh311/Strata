@@ -9,7 +9,7 @@ PORT = int(sys.argv[1])
 MODEL = sys.argv[2]
 LABEL = sys.argv[3] if len(sys.argv) > 3 else "run"
 BASE = f"http://127.0.0.1:{PORT}"
-KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-iq2_xs-tuned.json", encoding="utf-8")).get("api_key")
+KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-ud-q2_0-tuned.json", encoding="utf-8")).get("api_key")
 PARA = ("The harbor town woke slowly that morning, gulls tracing circles over the wet "
         "roofs while the fishing boats knocked gently against the quay. Salt air moved "
         "through the narrow streets, and the market women unfolded their canvases one by "

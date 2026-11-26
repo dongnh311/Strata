@@ -13,7 +13,7 @@ MODEL = sys.argv[2]
 LABEL = sys.argv[3] if len(sys.argv) > 3 else "run"
 OUT = sys.argv[4] if len(sys.argv) > 4 else r"D:\GitHub\Strata\.orca\car-page-fixed.html"
 BASE = f"http://127.0.0.1:{PORT}"
-KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-iq2_xs-tuned.json", encoding="utf-8")).get("api_key")
+KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-ud-q2_0-tuned.json", encoding="utf-8")).get("api_key")
 PAGE = Path(r"D:\GitHub\Strata\.orca\car-page-buggy.html").read_text(encoding="utf-8")
 PROMPT = (PAGE + "\n\nThis HTML page has one syntax error: a missing arrow (=>) after the "
           "parameters of a function. Fix that syntax error and return the complete corrected "
