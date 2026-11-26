@@ -386,43 +386,19 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   router now prefers `terminal/strata-ud-q2_0-tuned.json` and falls back to the root copy, and copies of the four
   active configs were put back in the root for the old scripts; `terminal/run-q2_0.bat` pointed at `terminal\.venv`
   (no such folder) and was fixed to the repo's `.venv`.
-- **Inkling stock by default, unc as a profile, and the router picks by model name (2026-11-26).** The stock SQ-10 pack
-  (`strata-engine/Inkling-2-Mini-Strata`, 11.13 GB, hash checked) is the default; the abliterated pack is a second
-  profile, never loaded unless a request names `inkling-2-mini-sq-10-unc`. The run configs
-  `terminal/strata-inkling-sq10-{stock,unc,fast}.json` clone every server-level key of the tuned Qwen config (API key,
-  `system_prompt`, `trusted_origins`, `allowed_hosts`, `mcp`/`mcp_servers`, `strip_cjk`, `reasoning_*`,
-  `tool_call_recovery`, `anthropic_thinking`, `min_free_vram_mib`, `api_monitor`, `before_load`, `env_to_user`) and change
-  only the model-level keys (engine, args, tokenizer, model_name, log); `effort_position: "end"` is dropped because the
-  Inkling engine 0.1.69 has no `--tail-role-token` (the Qwen config keeps it). `fit_max_tokens: true` is set on all three
-  (a client's 8K output cap would otherwise overflow the 32K/4.9K contexts). The model-router (`.orca/local-stack`, v1.3)
-  now has two backends: Qwen 18080 and Inkling 8000. A request's `model` chooses one; the other is unloaded
-  (`/v1/unload`) first, so only one model holds the 12 GB card. `/v1/models` lists `qwen3.8-flash-next-ud-q2_0`,
-  `inkling-2-mini-sq-10`, `inkling-2-mini-sq-10-unc`, `inkling-2-mini-sq-10-fast`; the stock and unc are profiles of the
-  same Inkling server, so switching between them is 4-15 s, while a Qwen<->Inkling switch is 14-28 s (the cold engine
-  load). Measured through 8081: stock 14-17 s first, unc 27 s (vision included), stock again 8-22 s, Qwen 27-28 s.
-  `profile_state` (server.py) now calls `engine_args(cfg, exe)`: without `exe` the Inkling probe was skipped and every
-  profile switch silently dropped `--vision` (images off, NO_IMAGES_REPLY); fixed and verified with the same picture on
-  stock and unc ("42; a circle"). **The stock and unc profiles are now at the model's 1M context** (`--max-context
-  1048576`, `--kv k8v4`; the engine maps the K/V in host RAM: 12,800 MiB at k8v4 against 16,896 at fp8). Measured cold
-  through 8081 with `.orca/bench-inkling-ab.py` (a random salt in each prompt, so no prefix cache): stock **41.8 tok/s
-  at 2,270 / 31.3 at 8,338 / 11.7 at 32,972** (prefill 569 / 791 / 710 tok/s) against fp8's 40.4 / 26.8 / 9.5 —
-  **k8v4 is +17% at 8K and +23% at 32K** (the narrower host K/V means less PCIe traffic per token); 2K is inside the
-  run-to-run spread (37.8-47.3 fp8, 43.5-50.0 k8v4). The 32K needle passes on both (ORANGE-7421, 9.1 fp8 / 11.1
-  k8v4 decode). **The 1M needle passes too** (2026-11-26, stock, k8v4, 1M context): 1,047,456 prompt tokens with
-  the code at 50% depth answered `ORANGE-7421` in a 2 h 42 min run — prefill 9,662 s (108 tok/s average, the rate
-  decaying to ~73 tok/s at the end), first engine token at 9,662.9 s, **8 tokens at 0.1 tok/s** (58 s), drafts 2/17;
-  GPU 11.8 of 12.3 GB, RAM 30.6 of 47.7 GiB used. So 1M is a read-once capability, not an interactive context: at 1M
-  every token re-reads 12.4 GB of K/V from host RAM and the attention itself is long, which is why 128K measured
-  369 tok/s prefill / 3.3 decode and 32K 710 / 11.7. Six fixed questions (arithmetic, logic, reverse, weekday, a Python duration parser, a Vietnamese answer)
-  give the same answers on both — k8v4 is kept. What did NOT help: `--draft-beam 4` (the engine default; 35.1 / 25.2 /
-  9.3 against beam 1's 40.4 / 26.8 / 9.5), `--chunk 1024` (no change, and the engine still runs max_batch 512),
-  `--vram-experts-gb 8.5` (the loader caps at **7.03 GiB**: its reserve for runner+K/V+DSpark+WDDM is ~2 GiB, so 383
-  experts stay in host RAM and 6 on SSD), `--threads 20` on the cold-expert lane (24.3 against 24.9 ms/token — inside
-  noise). The `fast` profile is the stock pack with `--kv-offload off` (K/V in VRAM): the engine's auto-sizer lands on
-  **2,304 cells** (1.51 GiB free VRAM after the experts, the runner's reserve takes 800 MiB + WDDM/2), **55.7-57.6
-  tok/s at 2-3.8K**, against the 1M host-KV stock at ~42 (2K), 31 (8K), 11.7 (32K); its context is pinned to 2,304 so
-  the number the page shows is real. The abliterated pack has no control vector (the engine has no steering code); it is
-  the unc option, never the default.
+- **Inkling-2-Mini was tried and removed the same day (2026-11-26).** The stock SQ-10 pack (11.13 GB, hash checked)
+  and the abliterated one (11.14 GB) were installed and served through a two-backend model-router v1.3 (Qwen 18080,
+  Inkling 8000), then deleted on the owner's call: `models\Inkling-2-Mini-SQ-10`, `models\Inkling-2-Mini-abliterated`,
+  `packs\inkling-2-mini-sq-10`, the `terminal\strata-inkling-sq10-*.json` run configs, the `inkling2` engine component
+  and the saved `sq-10-*` launch profiles are gone (20.8 GB back). `.orca/local-stack/model-router.py` is the Qwen-only
+  v1.2 again (the v1.3 source is in commit `03f432c25`; `.orca/local-stack/model-router.py.bak-20261126` is the
+  v1.2 file that v1.3 replaced, so a future retry rebuilds v1.3 from that commit). The `profile_state` fix
+  (`engine_args(cfg, exe)` in server.py, so a profile switch keeps `--vision`) stays — it is a real bug fix. The
+  measured record: stock at 1M with `--kv k8v4` was **41.8 tok/s at 2K / 31.3 at 8K / 11.7 at 32K** (fp8: 40.4 / 26.8 /
+  9.5), the 1M needle passed (1,047,456 tokens, `ORANGE-7421`, 2 h 42 min, 108 tok/s prefill, 0.1 tok/s decode), the
+  `-fast` profile (KV in VRAM) 55.7-57.6 tok/s at 2.3K; it was still 4x slower than Qwen at long context because the
+  loader caps the experts at 7.03 GiB (383 host + 6 SSD, CPU lane 24 ms/token) and the K/V lives in host RAM — a
+  property of the 12 GB card and engine 0.1.69, not of the config. Qwen UD-Q2_0 stays the daily driver.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
