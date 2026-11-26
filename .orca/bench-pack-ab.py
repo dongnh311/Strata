@@ -7,7 +7,7 @@ Usage: python bench_ud.py [config.json]   - the api_key of that config is sent a
 """
 import json, time, urllib.request, sys
 
-BASE = "http://127.0.0.1:18080"
+BASE = "http://127.0.0.1:%d" % (int(sys.argv[2]) if len(sys.argv) > 2 else 18080)
 KEY = None
 if len(sys.argv) > 1:
     KEY = json.load(open(sys.argv[1], encoding="utf-8")).get("api_key")

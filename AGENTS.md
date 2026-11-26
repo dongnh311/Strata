@@ -399,6 +399,18 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   `-fast` profile (KV in VRAM) 55.7-57.6 tok/s at 2.3K; it was still 4x slower than Qwen at long context because the
   loader caps the experts at 7.03 GiB (383 host + 6 SSD, CPU lane 24 ms/token) and the K/V lives in host RAM — a
   property of the 12 GB card and engine 0.1.69, not of the config. Qwen UD-Q2_0 stays the daily driver.
+- **ISTA-DASLab IQ2_XS tried against UD-Q2_0 (2026-11-26).** `strata launch --model IQ2_XS --context 256k --vision gpu
+  --drafting mtp` downloaded and prepared the ISTA pack (`models\IQ2_XS`, 63.4 GB, 2 shards; `packs\iq2_xs`), and its own
+  server ran on 8080 with engine 0.1.57; the same pack was then served by `build-v034` (0.1.69) with the tuned Qwen
+  config's flags (`--kv q4_0`, `--kv-resident 32768`, MTP `basalt-rt` + the VI draft vocab, `STRATA_PF_SMALL=0`,
+  `STRATA_PCIE_BALANCE=1`): `terminal\strata-iq2_xs-tuned.json`. Measured with `.orca/bench-pack-ab.py` (13K/55K) and
+  `.orca/bench-244k-one.py` (~199K): **3,041 expert slots against UD-Q2_0's 2,336**; prefill **812 / 953 / 880 tok/s
+  against 854 / 1,013 / 906** (IQ2_XS 3-6% slower); decode **43.5 / 47.3 / 49.2 against 42.1 / 43.0 / 40.0** (IQ2_XS
+  5-23% faster, the long row the widest); cache re-read 35 tokens / 0.58 s (UD-Q2_0 0.59). The ~199K needle passed
+  (`ORANGE-7421`, the 198,783-token prefix fully reused on the repeat). Vision reads the test image ("42, a circle").
+  The six-question battery: **IQ2_XS 5/6** (Wednesday + 100 days -> "Saturday"), **UD-Q2_0 6/6** ("Friday"); every other
+  answer identical. Prod stays UD-Q2_0 until the owner decides; the IQ2_XS config is staged and its 8080 server is left
+  unloaded (auto-load on a request).
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
