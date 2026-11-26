@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Version 0.2.16 (source merged from upstream v0.2.16; the app and Terminal are 0.2.16 and Control and the
-engine packages are 0.1.62 — the engine binary on this PC is 0.1.62, built from the merged source into
-`D:\GitHub\Strata-data\build-v033` and running in production; `build-v032` (0.1.60.1), `build-v031` (0.1.59.1)
-and `build-v030` stay for rollback). The public model families are
+Version 0.2.22 (source merged from upstream v0.2.22; the app and Terminal are 0.2.22 and Control and the
+engine packages are 0.1.69 — the engine binary on this PC is 0.1.69, built from the merged source into
+`D:\GitHub\Strata-data\build-v034` and running in production; `build-v033` (0.1.62), `build-v032` (0.1.60.1),
+`build-v031` (0.1.59.1) and `build-v030` stay for rollback). The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B (upstream removed DeepSeek V4.1-Flash in 0.2.14: the `dsv41` engine, its
 sources and docs are gone; our `strata-unc48l*` configs and the `unc48L` model were already deleted here). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
@@ -337,6 +337,35 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   the title. So the PC is not weaker on a whole-file edit either, and needs more output tokens for the same result.
   The Mac has to be called with `"stream": true`: Cloudflare cuts a non-streaming origin at 100 s
   (`edge_deadline_exceeded`), so a 5-minute answer can only come back over SSE.
+- **Merged v0.2.22 and built engine 0.1.69 (2026-11-26).** App and Terminal 0.2.22; Control and every engine
+  package 0.1.69. `D:\GitHub\Strata-data\build-v034\strata.exe` is that engine, built by `.orca\build-v034.cmd`
+  (the same flags as v033: `-S engine`, the vendored `third_party/strata-ggml`, no MMQ), and **prod runs it** (the
+  pre-switch config is `strata-ud-q2_0-tuned.json.bak-20261126-pre-v034`, and `build-v033` is the rollback). 977
+  upstream commits, 1,594 files, +320,361 / -17,095. The 32 conflicts: `AGENTS.md` and the fork's text kept; the 18
+  locale catalogs taken from 0.2.22 with `tool.rejected` and the guic77 clause re-added; `server.py` 10 hunks (the
+  `/v1/load` profiles and switch, `system_prompt`, `strip_cjk`, `without_content_tools`/`empty_answer_*`/
+  `answer_room_reserve` all kept beside upstream's Hy4/Inkling stop tokens, key limits, image prompt tokens,
+  `has_vision()` and `/v1/models` shape); `drafting.py` keeps `_SLOWER`/`MEASURED_SLOWER` and adds upstream's
+  canonical-pack rule (#7090); `app.js`/`index.html` keep the System prompt field and the model guard and take
+  `thinkingForFamily`; the two workflow files stay deleted. **Upstream rewrote the q36 K/V cache**
+  (fp32/fp16/fp8/fp4): the fork's q36 `kv8`/Q8_0 patch is gone; `--kv q8_0` parses as fp8 and `q4_0` as fp4, and
+  nothing this PC runs uses the q36 engine. Upstream also added its own `vec_dot_q2_K/q3_K`, `dq_q2_k` and
+  `Fmt<10>/<11>`, so the fork's duplicate definitions were dropped; the Q2_K trimmed-row code (`q2k_dot`,
+  `row_dot_q2k_trim`, `Q2K_HALF_BYTES`, and `trimmed_row_bytes` in `gguf_reader.hpp`, restored after the
+  conflict) stays, and `prefill.cpp` keeps `iq_dequant_rows_f16` with upstream's `gu_type == kNvfp4` guard;
+  `kNativeFF = 2048` unchanged. `has_vision()` now includes the fork's `native_vision` (dsv41). Two SYCL-mount
+  tests skip on this PC (they assume no `Strata-data` beside the checkout), with the reason in the test.
+  **`STRATA_PF_SMALL=0` is in the tuned config**: 0.2.22's small-card rule fired (expert cache 2337 slots, default
+  chunk 7936 < 8192) and picked the small-card prompt path, which cost 5% at 13K and 4% at 55K; the numbers below
+  use the default path. Gates: undefined names 0; `pytest terminal/tests/terminal -k drafting` **450 passed, 2
+  skipped, 0 failed**; node drafting/split-app/ui-r3 **48/48**; `npm test` **2,388 tests, 2,238 pass, 2 fail**
+  (only the two EPERM-symlink ones). Bench against a same-day 0.1.62 run (the card was slower today than on
+  20/11, so only the same-day pair compares): 13K cold **854** (0.1.62: 846), cache **35 tokens read, first token
+  0.59 s** (0.70), 55K cold **1013** (1000), decode 42.1 / 42.4 / 43.0 / 40.4 (40.2 / 42.5 / 42.7 / 46.8); the
+  234,300-token prompt read 213,021 tokens in 235.2 s (**906 tok/s**, 0.1.62: 893) with decode 40.0 (39.7). Prod
+  after the switch: **2337 slots, `drafting=mtp`, `kv q4_0`, `vram_free_mib` 1542, `cvec project:4-44`**, and the
+  log's `draft head over 65568 tokens` and `--mtp-q4` Q4_0. Branch and tag `backup-pre-0.2.22` /
+  `backup-pre-0.2.22-tag`.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
@@ -414,10 +443,11 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   On engine 0.1.60.1 (2026-11-16, `build-v032`) UD-Q2_0 measured 802 (13K cold), **1006** (55K cold) and **902-907
   prefill / 46.8-49.4 decode at 236K** - the long row is above 0.1.59.1's 825.6 / 46.9, and the 13K 802 is inside the
   IQ1_M band, so the floor stands.
-- **How to check, in order:** `python -m pytest terminal/tests/terminal -k drafting` - **0 failed** is the bar now (2026-11-17:
-  361 passed, 1 skipped; the old `coder-iq1_m` / `test_the_names_the_setups_write` failures are gone); `node --test
+- **How to check, in order:** `python -m pytest terminal/tests/terminal -k drafting` - **0 failed** is the bar now (2026-11-26:
+  450 passed, 2 skipped; the old `coder-iq1_m` / `test_the_names_the_setups_write` failures are gone and the two
+  SYCL-mount skips are this PC's layout); `node --test
   tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` in `app/host` - all green (48/48 on
-  2026-11-17); full `npm test` in `app/host` - only the two EPERM-symlink failures (chat-shell #4783, model-directory;
+  2026-11-26); full `npm test` in `app/host` - only the two EPERM-symlink failures (chat-shell #4783, model-directory;
   Windows permission, not the code) may stay, nothing new; then restart the engine,
   run `.venv\Scripts\python.exe .orca\bench-pack-ab.py strata-ud-q2_0-tuned.json`, and send one chat call with
   `Origin: http://127.0.0.1:8081` and `"strata_mcp": true` - it must answer; an unknown origin must still get a 403.
@@ -453,21 +483,22 @@ A merge is done only when every box is checked. Skip nothing because "it probabl
 - [ ] `python .orca/undefined_names.py terminal/serve terminal/strata_control terminal/strata_cli` — 0 suspicious calls. A merge that keeps a
       call and drops its `def` compiles clean and only fails at runtime: `63cf42a5` (v0.2.10) dropped `mcp_note`
       and `/v1/messages` + server-side MCP raised `NameError`.
-- [ ] `python -m pytest terminal/tests/terminal -k drafting` — 0 failed is the bar (2026-11-20: 409 passed, 1 skipped).
+- [ ] `python -m pytest terminal/tests/terminal -k drafting` - 0 failed is the bar (2026-11-26: 450 passed, 2 skipped).
 - [ ] `cd app/host && node --test tests/drafting.test.mjs tests/split-app.test.mjs tests/ui-r3.test.mjs` — all green.
 - [ ] `cd app/host && npm test` — only the two EPERM-symlink failures (chat-shell #4783, model-directory);
       nothing new.
 - [ ] Re-read the tuned run configs — a merge or a Models-screen Save can write old numbers back:
       `strata-ud-iq1_m.json` keeps `drafting:"mtp"`, `--vram-reserve-mib 1472`, conversation cache
       10078/6/8000/1536, `expert_profile_save`, `trusted_origins`, `allowed_hosts`, and `env`
-      `STRATA_EXPDEC=1 STRATA_PLE_AUTO_MMAP=1 STRATA_HC_UPMIX=1 STRATA_Q2_BITPLANE=1 STRATA_PCIE_BALANCE=1`;
+      `STRATA_EXPDEC=1 STRATA_PLE_AUTO_MMAP=1 STRATA_PCIE_BALANCE=1` (and, since 2026-11-26, `STRATA_PF_SMALL=0`);
       `strata-q2_0-v144-refusal.json` unchanged apart from upstream-needed fields.
 - [ ] Kill ALL `strata.exe` / `strata-vision.exe` / `serve/server.py` first (duplicates once cut the expert cache
       to 1083 slots and decode to ~15 tok/s — that was NOT a merge regression). `nvidia-smi` must show ~12 GB free
       before starting exactly one server.
 - [ ] Start the production config on 18080, wait for `/v1/models`, then check `/metrics`: correct model id,
-      `drafting=mtp`, `spec=12`, expert slots at the full count for that pack (UD-IQ1_M ~2210, Q2_0 ~3176),
-      `vram_free_mib` ~1464–1472, no "below 1024 MiB" line in the log.
+      `drafting=mtp`, `spec=12`, expert slots at the full count for that pack (UD-IQ1_M ~2210; Q2_0 **2337** on
+      0.1.69, 2422 on 0.1.62-0.1.60.1), `vram_free_mib` ~1464–1546, no "below 1024 MiB" line in the log, and no
+      `small expert cache` line with `STRATA_PF_SMALL=0` set.
 - [ ] `.venv\Scripts\python.exe .orca\bench-pack-ab.py <prod-config>` — compare against the floor numbers above
       (and the Q2_0 row). A number that went down means the merge changed behaviour: find the line, fix or
       revert it, re-merge. Never ship "everything broke".
