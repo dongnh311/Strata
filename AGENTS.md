@@ -408,6 +408,17 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   zero-length arc). **UD-Q2_0 stays prod**; the 63.4 GB pack, `packs\iq2_xs`, the staged config, the launcher files
   and the 8080 server were removed the same day (D: back to 228.4 GB). To retry: read the report first; re-measure the
   engine's i-quant kernels on a new build before believing the trade again.
+- **Speed re-check on 0.1.69 (2026-11-26, UD-Q2_0): no lever beat the tuned config.** Each variant ran on its own serve
+  (18082, `.orca\serve-variant.ps1`) with the prod config; rows are cold 13K/55K from `.orca\bench-pack-ab.py` and a
+  167K/200-token row from `.orca\long-decode.py`. Baseline: 13K **779-800 tok/s prefill / 34.9-35.3 decode**, 55K
+  **1000-1004 / 42.7-43.9**, 167K **941 / 51.4** (KV block reads 85.27% from VRAM), cache re-read 35 tokens / 0.65 s.
+  `STRATA_PREFILL_AUTO_MAX=16384` did nothing: `--prefill auto` already picks a **7680-token** chunk, under the 8192 cap.
+  `--spec 6` did nothing: the engine reports `spec=12` whatever the flag says. `--vram-reserve-mib 1344` gave **+87 slots**
+  (2423) but decode stayed inside the spread. `--kv-resident 65536` cost **151 slots** and moved the long-prompt K/V hit
+  only 85.27 -> 85.66% (decode 51.4 -> 49.4, worse). `STRATA_DENSE_MMQ=1` was +3% in the first run and -1% in the second;
+  `STRATA_SPEC_ADAPT_SM86=1` +0-2% - both inside the **+-5% run-to-run spread** that draft acceptance and the expert hit
+  rate create. Nothing was kept; the tuned config stands. The old 512K sweep configs (`strata-sweep-*`) are a different
+  (yarn 512K) experiment, not a 262K tuning win.
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored

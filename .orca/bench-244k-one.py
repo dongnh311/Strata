@@ -1,4 +1,4 @@
-"""One long prompt against a Qwen server: python bench-244k-one.py <port> <reps>"""
+"""One long prompt against a Qwen server: python bench-244k-one.py <port> <reps> [config]"""
 import json
 import sys
 import time
@@ -6,9 +6,11 @@ import urllib.request
 
 PORT = int(sys.argv[1])
 REPS = int(sys.argv[2])
+CFG = sys.argv[3] if len(sys.argv) > 3 else r"D:\GitHub\Strata\terminal\strata-ud-q2_0-tuned.json"
 BASE = f"http://127.0.0.1:{PORT}"
-KEY = json.load(open(r"D:\GitHub\Strata\terminal\strata-iq2_xs-tuned.json", encoding="utf-8")).get("api_key")
-MODEL = json.load(open(r"D:\GitHub\Strata\terminal\strata-iq2_xs-tuned.json", encoding="utf-8")).get("model_name")
+_cfg = json.load(open(CFG, encoding="utf-8"))
+KEY = _cfg.get("api_key")
+MODEL = _cfg.get("model_name")
 PARA = ("The harbor town woke slowly that morning, gulls tracing circles over the wet "
         "roofs while the fishing boats knocked gently against the quay. Salt air moved "
         "through the narrow streets, and the market women unfolded their canvases one by "
