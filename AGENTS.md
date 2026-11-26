@@ -408,7 +408,12 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   at 2,270 / 31.3 at 8,338 / 11.7 at 32,972** (prefill 569 / 791 / 710 tok/s) against fp8's 40.4 / 26.8 / 9.5 —
   **k8v4 is +17% at 8K and +23% at 32K** (the narrower host K/V means less PCIe traffic per token); 2K is inside the
   run-to-run spread (37.8-47.3 fp8, 43.5-50.0 k8v4). The 32K needle passes on both (ORANGE-7421, 9.1 fp8 / 11.1
-  k8v4 decode). Six fixed questions (arithmetic, logic, reverse, weekday, a Python duration parser, a Vietnamese answer)
+  k8v4 decode). **The 1M needle passes too** (2026-11-26, stock, k8v4, 1M context): 1,047,456 prompt tokens with
+  the code at 50% depth answered `ORANGE-7421` in a 2 h 42 min run — prefill 9,662 s (108 tok/s average, the rate
+  decaying to ~73 tok/s at the end), first engine token at 9,662.9 s, **8 tokens at 0.1 tok/s** (58 s), drafts 2/17;
+  GPU 11.8 of 12.3 GB, RAM 30.6 of 47.7 GiB used. So 1M is a read-once capability, not an interactive context: at 1M
+  every token re-reads 12.4 GB of K/V from host RAM and the attention itself is long, which is why 128K measured
+  369 tok/s prefill / 3.3 decode and 32K 710 / 11.7. Six fixed questions (arithmetic, logic, reverse, weekday, a Python duration parser, a Vietnamese answer)
   give the same answers on both — k8v4 is kept. What did NOT help: `--draft-beam 4` (the engine default; 35.1 / 25.2 /
   9.3 against beam 1's 40.4 / 26.8 / 9.5), `--chunk 1024` (no change, and the engine still runs max_batch 512),
   `--vram-experts-gb 8.5` (the loader caps at **7.03 GiB**: its reserve for runner+K/V+DSpark+WDDM is ~2 GiB, so 383
