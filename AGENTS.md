@@ -433,6 +433,19 @@ leaves this PC slower, or lets a screen write an old number back over a tuned co
   resolves `/main` and got v2 (SHA `1a8267c2`, checked). The 58.5 GB model, `packs\gyro-s`, the staged config, the
   copied profiles and the 18082 server were removed the same day (D: 228.6 GB); UD-Q2_0 was warmed again (2,336 slots,
   MTP, 1,540 MiB VRAM free).
+- **Only UD-Q2_0 stays; the pack cannot be trimmed (2026-11-27).** Removed the ISTA Q2_0 (61.9 GB) and UD-IQ1_M (63.3 GB)
+  packs, their `packs\` dirs (`q2_0`, `ud_iq1_m`, `gyro-m`) and every run config/log that named them (`strata-q2_0*`,
+  `strata-ud-iq1_m*`, `strata-sweep-*`, `strata-unc48l*`, `strata-iq2mix`, `strata-gyro-m`, the old `strata-config.bak*`
+  and the root copies); `models` now holds UD-Q2_0 only, D: **358 GB** free. **The prod config's `tokenizer` pointed at
+  `packs\ud_iq1_m\tokenizer`; it now points at `packs\ud_q2_0\tokenizer`** (same base vocab). A config whose pack is
+  deleted must be repointed before the next load, or the server stops with "the model's tokenizer is missing" - that is
+  how this cleanup briefly took prod down (fixed and warmed again). The 65.7 GB pack is 38.87 GB of UD-Q2_0 weights +
+  **26.82 GB PLE table** (one `per_layer_token_embd.weight` tensor, **IQ4_NL**, 320,001,536 rows; `--ple-io direct` reads
+  it from the SSD and never keeps it in RAM) + 0.01 GB header. No supported trim makes it smaller, and every smaller
+  file measured worse here: UD-IQ1_M -2.4 GB (slower), ISTA Q2_0 -3.8 GB (different quality), Gyro-S -7.2 GB (decode
+  -31..44%). On the RAM side `--mmap-experts` is accepted by 0.1.69 and drops the 34.79 GiB arena (RAM free 2.6-3.8 ->
+  **30.2 GB**) at 13K **312 tok/s prefill / 11.9 decode** against 800 / 34.9, and 55K 809 / 15.1 - it is a 3x slowdown,
+  so the arena stays. The conversation cache (10 GB) is the only cheap RAM knob (`.orca\ab-mmapexperts.txt`).
 - **Merged v0.2.16 and built engine 0.1.62 (2026-11-20).** App and Terminal 0.2.16; Control and every engine
   package 0.1.62. `D:\GitHub\Strata-data\build-v033\strata.exe` is that engine, built by `.orca\build-v033.cmd` from
   `-S D:\GitHub\Strata\engine` (own-stack: no llama.cpp MMQ options at all, ggml from the vendored
